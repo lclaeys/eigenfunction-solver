@@ -15,7 +15,8 @@ class QuadraticEnergy(BaseEnergy):
         """
         super().__init__(*args, **kwargs)
         self.A = A
-        self.A_inv = torch.linalg.pinv(A)  # Compute pseudo-inverse of A in case it is not invertible
+        self.dim = self.A.shape[0]
+        self.L = torch.linalg.cholesky(self.A)
 
     def forward(self, x):
         """
@@ -48,10 +49,10 @@ class QuadraticEnergy(BaseEnergy):
         Compute exact samples from the stationary measure (multivariate normal).
 
         Args:
-            n (Tensor)[shape]: shape of sample
+            n (tuple): shape of sample
         Returns:
-            sample (Tensor)[shape, d]: samples
+            sample (Tensor)[n, d]: samples
         """
-        # Sample from a multivariate normal distribution with mean 0 and covariance matrix A_inv
-        sample = torch.randn(n) @ torch.linalg.cholesky(self.A_inv)  # Cholesky decomposition for sampling
+        # Sample from a multivariate normal distribution with mean 0 and covariance matrix A
+        sample = torch.randn(n + (self.dim,)) @ self.L.T  
         return sample
