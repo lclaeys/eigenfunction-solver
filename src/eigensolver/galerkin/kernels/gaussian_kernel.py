@@ -1,5 +1,5 @@
 import torch
-from src.eigensolver.kernel.kernels.base_kernel import BaseKernel
+from src.eigensolver.galerkin.kernels.base_kernel import BaseKernel
 
 class GaussianKernel(BaseKernel):
     """
