@@ -1,14 +1,15 @@
 import numpy as np
 from src.eigensolver.galerkin.kernels.base_kernel import BaseKernel
-from scipy.spatial.distance import cdist
 
-class GaussianKernel(BaseKernel):
+class PolynomialKernel(BaseKernel):
     """
-    Gaussian kernel, f(x,y) = exp(-||x-y||^2/(2*scale^2))
+    Polynomial kernel, f(x,y) = (beta+(x^Ty)/alpha^2)^p
     """
     def __init__(self, params, *args, **kwargs):
         super().__init__(params, *args, **kwargs)
         self.scale = params.get('scale',1.0)
+        self.constant = params.get('consant', 1.0)
+        self.order = params.get('order', 1.0)
 
     def forward(self, x, y):
         """
@@ -20,8 +21,8 @@ class GaussianKernel(BaseKernel):
             Returns:
                 k_xy (Tensor)[n,p]: k_xy(i,j) = k(x_i,y_j)
         """
-        distances = cdist(x,y)
-        k_xy = np.exp(-distances**2/(2*self.scale**2))
+
+        k_xy = (self.constant + x@y.T/self.scale**2)**self.order
 
         return k_xy
     
@@ -35,11 +36,8 @@ class GaussianKernel(BaseKernel):
             Returns:
                 grad_k_xy (Tensor)[n,p,d]: grad_k_xy(i,j) = grad k_{y_j}(x_i)
         """
-        diffs = x[:,None,:]-y[None,:,:]
-        distances = cdist(x,y)
-        k_xy = np.exp(-distances**2/(2*self.scale**2))
-
-        grad_k_xy = -1/(self.scale**2)*diffs*k_xy[:,:,None]
+        xy_term = (self.constant + x@y.T/self.scale**2)**(self.order-1)
+        grad_k_xy = self.order/self.scale**2*xy_term[:,:,None]*y[None,:,:]
 
         return grad_k_xy
     
@@ -53,13 +51,10 @@ class GaussianKernel(BaseKernel):
             Returns:
                 delta_k_xy (Tensor)[n,p]: delta_k_xy(i,j) = div(grad(k_{y_j}))(x_i)
         """
-        distances = cdist(x,y)
-        k_xy = np.exp(-distances**2/(2*self.scale**2))
-
-        delta_k_xy = (-self.dim/self.scale**2 + distances**2/self.scale**4)*k_xy
-
+        y_norm = np.linalg.norm(y,axis=1)
+        delta_k_xy = self.order*(self.order-1)/self.scale**4*(self.constant + x@y.T/self.scale**2)**(self.order-2)*y_norm[None,:]
         return delta_k_xy
 
 def create_instance(params):
-    kernel = GaussianKernel(params)
+    kernel = PolynomialKernel(params)
     return kernel

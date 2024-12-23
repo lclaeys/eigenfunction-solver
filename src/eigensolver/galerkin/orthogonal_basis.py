@@ -1,5 +1,3 @@
-import torch
-
 class OrthogonalBasis():
     """
     Basis obtained by making previous basis orthogonal to constant function

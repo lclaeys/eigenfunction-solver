@@ -1,7 +1,8 @@
-import torch
+import numpy as np
 import importlib
 from src.eigensolver.base_eigensolver import BaseSolver
 from numpy.linalg import LinAlgError
+from scipy.linalg import eigh
 
 class GalerkinSolver(BaseSolver):
     """
@@ -11,38 +12,60 @@ class GalerkinSolver(BaseSolver):
         super().__init__(energy, sigma, *args, **kwargs)
         self.regularizer = params.get('regularizer',0)
         self.dim = energy.dim
+        self.verbose = params.get('verbose',False)
 
-    def fit(self, data, basis, params):
+    def fit(self, data, basis, k = 16, L_reg = 0, phi_reg = 0):
         """
         Fit the eigenfunctions.
 
         Args:
             data (Tensor)[n,d]: samples from stationary distribution
             basis (Basis): basis functions
+            k (int): number of eigenfunctions to compute
         """
         x = data
         
         L = self.compute_L(x,basis)
         phi = self.compute_phi(x,basis)
 
-        try:
-            psi = torch.linalg.cholesky(phi)
-        except RuntimeError:
-            #print('Fitting error: the matrix phi is not positive definite.')
-            return None
+        error = eigh(L, eigvals_only=True, subset_by_index=[0, 0])[0]
+        if error < 0:
+            L_reg += -error*10
         
-        psi_inv = torch.linalg.inv(psi)
-        C = psi_inv @ L @ psi_inv.T
+        error = eigh(phi, eigvals_only=True, subset_by_index=[0, 0])[0]
+        if error < 0:
+            phi_reg += -error*1.1
+            if self.verbose:
+                print(f'Warning: phi not positive definite, adding regularizer {phi_reg:.3e}')
 
-        eigvals, eigvecs = torch.linalg.eigh(C)
+        L = L + L_reg*np.eye(L.shape[0])
+        phi = phi + phi_reg*np.eye(phi.shape[0])
 
-        eigvecs = eigvecs.T@psi_inv
+        try:
+            eigvals, eigvecs = eigh(L, phi, subset_by_index=[0, k])
+        except LinAlgError as e:
+            if self.verbose:
+                print('Error solving GEVD')
+            return None
+        # try:
+        #     psi = np.linalg.cholesky(phi)
+        # except RuntimeError:
+        #     if self.verbose:
+        #             print('Error decomposing phi.')
+        #     return None
 
-        orth_error = torch.mean((eigvecs@phi@eigvecs.T-torch.eye(eigvecs.shape[0]))**2)
-        #print(f'Orthogonality error: {orth_error}')
+        # psi_inv = np.linalg.inv(psi)
+        # C = psi_inv @ L @ psi_inv.T
 
-        l_error = torch.mean((phi@eigvecs.T@torch.diag(eigvals)@eigvecs@phi.T-L)**2)
-        #print(f'L error: {l_error}')
+        # eigvals, eigvecs = np.linalg.eigh(C)
+        # eigvecs = eigvecs.T@psi_inv
+
+        # if self.verbose:
+        #     orth_error = np.mean((eigvecs@phi@eigvecs.T-np.eye(eigvecs.shape[0]))**2)
+        #     print(f'Orthogonality error: {orth_error}')
+
+        #     l_error = np.mean((phi@eigvecs.T@np.diag(eigvals)@eigvecs@phi.T-L)**2)
+        #     print(f'L error: {l_error}')
 
         self.eigvals = eigvals
         self.eigvecs = eigvecs
@@ -59,7 +82,7 @@ class GalerkinSolver(BaseSolver):
         Returns:
             fx (Tensor)[n,m]: learned eigenfunctions evaluated at points x.
         """
-        fx = self.basis(x)@self.eigvecs.T
+        fx = self.basis(x)@self.eigvecs
 
         return fx
     
@@ -74,7 +97,7 @@ class GalerkinSolver(BaseSolver):
         """
         grad_basis = self.basis.grad(x)
 
-        grad_fx = (grad_basis.transpose(1,2)@self.eigvecs.T).transpose(1,2)
+        grad_fx = np.transpose((np.transpose(grad_basis,axes=[0,2,1])@self.eigvecs),axes=[0,2,1])
         
         return grad_fx
     
@@ -89,7 +112,7 @@ class GalerkinSolver(BaseSolver):
         """
         delta_basis = self.basis.laplacian(x)
 
-        delta_fx = delta_basis@self.eigvecs.T
+        delta_fx = delta_basis@self.eigvecs
 
         return delta_fx
     
@@ -105,7 +128,7 @@ class GalerkinSolver(BaseSolver):
 
         energy_grad = self.energy.grad(x)
 
-        Lfx = -self.sigma*self.predict_laplacian(x) + torch.bmm(self.predict_grad(x), energy_grad.unsqueeze(2)).squeeze(2)
+        Lfx = -self.sigma*self.predict_laplacian(x) + np.matmul(self.predict_grad(x), energy_grad[:,:,None]).squeeze(2)
 
         return Lfx
     
@@ -130,15 +153,18 @@ class GalerkinSolver(BaseSolver):
         energy_grad = self.energy.grad(x)
 
         # (n, p)
-        energy_dotprod = torch.bmm(grad_basis, energy_grad.unsqueeze(2)).squeeze(2)
+        energy_dotprod = np.matmul(grad_basis, energy_grad[:,:,None]).squeeze(2)
 
+        """
         # (n, p, p)
         G = basis(x)[:,:,None]*(-self.sigma*delta_basis[:,None,:] + energy_dotprod[:,None,:])
 
         H = 1/2*G + 1/2*G.transpose(1,2)
         
-        L = torch.sum(H,dim=0)/x.shape[0]
+        L = np.sum(H,axis=0)/x.shape[0]
+        """
 
+        L = np.matmul(grad_basis, np.transpose(grad_basis,axes=[0,2,1])).sum(axis=0)/x.shape[0]
         return L
     
     def compute_phi(self, x, basis):
@@ -155,9 +181,9 @@ class GalerkinSolver(BaseSolver):
         x_basis = basis(x)
 
         # (p, p)
-        phi = torch.sum(x_basis[:,:,None]*x_basis[:,None,:],dim=0)/x.shape[0]
+        phi = np.sum(x_basis[:,:,None]*x_basis[:,None,:],axis=0)/x.shape[0]
         
-        return phi + self.regularizer*torch.eye(basis.basis_dim)
+        return phi + self.regularizer*np.eye(basis.basis_dim)
         
         
 
