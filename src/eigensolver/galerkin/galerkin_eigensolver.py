@@ -10,7 +10,6 @@ class GalerkinSolver(BaseSolver):
     """
     def __init__(self, energy, sigma, params, *args, **kwargs):
         super().__init__(energy, sigma, *args, **kwargs)
-        self.regularizer = params.get('regularizer',0)
         self.dim = energy.dim
         self.verbose = params.get('verbose',False)
 
@@ -183,7 +182,7 @@ class GalerkinSolver(BaseSolver):
         # (p, p)
         phi = np.sum(x_basis[:,:,None]*x_basis[:,None,:],axis=0)/x.shape[0]
         
-        return phi + self.regularizer*np.eye(basis.basis_dim)
+        return phi
         
         
 
