@@ -1,4 +1,5 @@
 import numpy as np
+import heapq
 from itertools import combinations
 
 from src.energy.base_energy import BaseEnergy
@@ -18,8 +19,9 @@ class QuadraticEnergy(BaseEnergy):
         super().__init__(*args, **kwargs)
         self.A = A
         self.dim = self.A.shape[0]
-        self.L = np.linalg.cholesky(self.A)
         self.compute_indices = 0
+        self.diag_A = np.diag(A)
+
     def forward(self, x):
         """
         Evaluate the energy at the given points.
@@ -55,15 +57,15 @@ class QuadraticEnergy(BaseEnergy):
         Returns:
             sample (Tensor)[n, d]: samples
         """
-        # Sample from a multivariate normal distribution with mean 0 and covariance matrix A
-        sample = np.random.standard_normal(n + (self.dim,)) @ self.L.T  
+        # Sample from a multivariate normal distribution with mean 0 and covariance matrix inv(A)
+        sample = np.random.multivariate_normal(np.zeros(self.dim), np.linalg.inv(self.A), size = n)
         return sample
     
     def exact_eigvals(self, m):
         if self.compute_indices != m:
             self._compute_indices(m)
 
-        return self.indices.sum(axis=1) 
+        return self.eigvals
 
     def exact_eigfunctions(self, x, m):
         """
@@ -78,7 +80,7 @@ class QuadraticEnergy(BaseEnergy):
 
         fx = np.ones([x.shape[0],m])
         for i in range(m):
-            hermite_evals = eval_hermitenorm(self.indices[i],x)
+            hermite_evals = eval_hermitenorm(self.indices[i],x*np.sqrt(self.diag_A)[None,:])
             if len(hermite_evals.shape) != 1:
                 hermite_evals = np.prod(hermite_evals,axis=1)
             fx[:,i] *= hermite_evals
@@ -89,35 +91,47 @@ class QuadraticEnergy(BaseEnergy):
         if self.compute_indices == m:
             return self.indices
         
-        i = 1
-        self.indices = np.zeros([m,self.dim],dtype=int)
-        eigval = 1
-        while i < m:
-            combinations = self._generate_combinations(eigval,self.dim)
-            j = min(combinations.shape[0],m-i)
-            self.indices[i:i+j,:] = combinations[:j]
-            eigval += 1
-            i += j
-        
-        self.compute_indices = m
+        self.eigvals, self.indices = self.smallest_combinations(np.diag(self.A), m)
 
     @staticmethod
-    def _generate_combinations(k, n):
-        # Total number of slots (k objects + n-1 dividers)
-        total_slots = k + n - 1
-        # Indices for dividers (choose n-1 positions for dividers from total slots)
-        divider_positions = list(combinations(range(total_slots), n - 1))
-        # Generate combinations
-        all_combinations = []
-        for dividers in divider_positions:
-            combination = np.zeros(n, dtype=int)
-            start = 0
-            for i, divider in enumerate(dividers):
-                combination[i] = divider - start
-                start = divider + 1
-            combination[-1] = total_slots - start  # Remaining objects in the last box
-            all_combinations.append(combination)
-        return np.array(all_combinations)
+    def smallest_combinations(x, m):
+        """
+        Args:
+            x (array)[d]: input array of eigenvalues of A
+            m (int) 
+        Returns:
+            vals (array)[m]: smallest linear combinations of eigenvalues
+            vecs (array)[m,d]: indices of those combinations
+        """
+        n = len(x)
+        
+        heap = []
+        visited = set()
+        
+        # Start with the combination (0, 0, ..., 0)
+        initial = (0, [0] * n)  # (S, a_vector)
+        heapq.heappush(heap, initial)
+        visited.add(tuple([0] * n))
+        
+        vals = []
+        vecs = []
+        
+        while len(vals) < m:
+            S, a_vector = heapq.heappop(heap)
+            vals.append(S) 
+            vecs.append(a_vector)
+
+            # Generate new combinations
+            for i in range(n):
+                new_a_vector = a_vector[:]
+                new_a_vector[i] += 1
+                new_S = S + x[i]
+                
+                if tuple(new_a_vector) not in visited:
+                    heapq.heappush(heap, (new_S, new_a_vector))
+                    visited.add(tuple(new_a_vector))
+        
+        return np.array(vals), np.array(vecs)
 
 
         

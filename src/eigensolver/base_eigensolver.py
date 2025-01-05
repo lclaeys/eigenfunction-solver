@@ -2,11 +2,10 @@ class BaseSolver():
     """
     Base class for eigenfunction solvers.
 
-    Initialed using energy object and sigma > 0.
+    Initialized using energy object
     """
-    def __init__(self, energy, sigma, *args, **kwargs):
+    def __init__(self, energy, *args, **kwargs):
         self.energy = energy
-        self.sigma = sigma
 
     def fit(self, data, config):
         """
