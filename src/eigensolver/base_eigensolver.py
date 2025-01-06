@@ -12,7 +12,7 @@ class BaseSolver():
         Fit the eigenfunctions.
 
         Args:
-            data (Tensor): samples from stationary distribution
+            data (ndarray): samples from stationary distribution
         """
         raise NotImplementedError
     
@@ -21,8 +21,8 @@ class BaseSolver():
         Evaluate learned eigenfunction at points x.
 
         Args:
-            x (Tensor)[n,d]: points at which to evaluate
+            x (ndarray)[n,d]: points at which to evaluate
         Returns:
-            fx (Tensor)[m,n,d]: learned eigenfunctions evaluated at points x.
+            fx (ndarray)[m,n,d]: learned eigenfunctions evaluated at points x.
         """
         raise NotImplementedError

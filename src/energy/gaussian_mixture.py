@@ -1,7 +1,6 @@
 import numpy as np
 from src.energy.base_energy import BaseEnergy
 
-
 class GaussianMixture(BaseEnergy):
     """
     Energy function corresponding to a Gaussian mixture
@@ -10,9 +9,9 @@ class GaussianMixture(BaseEnergy):
     def __init__(self, weights, means, covs, *args, **kwargs):
         """
         Args:
-            weights (array)[M]: weights (should sum to 1)
-            means (array)[M,d]: means of the modes
-            covs (array)[M,d,d]: cov matrices of modes
+            weights (ndarray)[M]: weights (should sum to 1)
+            means (ndarray)[M,d]: means of the modes
+            covs (ndarray)[M,d,d]: cov matrices of modes
         """
         super().__init__(*args, **kwargs)
         self.weights = weights
@@ -33,9 +32,9 @@ class GaussianMixture(BaseEnergy):
         where p_i(x) = 1/|cov_i|^(1/2)*exp(-1/2 (x-mu_i)T inv_cov_i (x-mu_i))
 
         Args:
-            x (Tensor)[N, d]: points to evaluate at
+            x (ndarray)[N, d]: points to evaluate at
         Returns:
-            energy (Tensor)[N]: energy evaluated at points
+            energy (ndarray)[N]: energy evaluated at points
         """
         # Energy E(x) = -log(\sum_i w_i p_i(x))
         quadratic_forms = np.einsum('kij,kjj,kij->ik',x[None,:,:]-self.means[:,None,:],self.inv_covs,x[None,:,:]-self.means[:,None,:])
@@ -49,9 +48,9 @@ class GaussianMixture(BaseEnergy):
         grad E(x) = -1/(sum_i w_i grad p_i(x))  * (sum_i w_i grad p_i(x))
                   = 1/(sum_i w_i grad p_i(x)) * (sum_i w_i p_i(x) inv_cov_i (x-mu_i))
         Args:
-            x (Tensor)[N, d]: points to evaluate
+            x (ndarray)[N, d]: points to evaluate
         Returns:
-            grad_x (Tensor)[N, d]: gradient of energy evaluated at points
+            grad_x (ndarray)[N, d]: gradient of energy evaluated at points
         """
         # N x M
         quadratic_forms = np.einsum('kij,kjj,kij->ik',x[None,:,:]-self.means[:,None,:],self.inv_covs,x[None,:,:]-self.means[:,None,:])
@@ -74,7 +73,7 @@ class GaussianMixture(BaseEnergy):
         Args:
             n (tuple): shape of sample
         Returns:
-            samples (Tensor)[n, d]: samples
+            samples (ndarray)[n, d]: samples
         """
         # Sample from a multivariate normal distribution with mean 0 and covariance matrix inv(A)
         indices = np.random.choice(np.arange(self.M),size = n, p = self.weights)
