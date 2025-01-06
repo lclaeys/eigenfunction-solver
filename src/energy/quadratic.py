@@ -14,7 +14,7 @@ class QuadraticEnergy(BaseEnergy):
     def __init__(self, A, *args, **kwargs):
         """
         Args:
-            A (Tensor): Positive semi-definite matrix (d, d)
+            A (ndarray): Positive semi-definite matrix (d, d)
         """
         super().__init__(*args, **kwargs)
         self.A = A
@@ -27,9 +27,9 @@ class QuadraticEnergy(BaseEnergy):
         Evaluate the energy at the given points.
 
         Args:
-            x (Tensor)[N, d]: points to evaluate at
+            x (ndarray)[N, d]: points to evaluate at
         Returns:
-            energy (Tensor)[N]: energy evaluated at points
+            energy (ndarray)[N]: energy evaluated at points
         """
         # Energy E(x) = 0.5 * x^T A x
         energy = 0.5 * np.sum(x @ self.A * x, axis=-1)
@@ -40,9 +40,9 @@ class QuadraticEnergy(BaseEnergy):
         Evaluate the gradient of energy at the given points.
 
         Args:
-            x (Tensor)[N, d]: points to evaluate
+            x (ndarray)[N, d]: points to evaluate
         Returns:
-            grad_x (Tensor)[N, d]: gradient of energy evaluated at points
+            grad_x (ndarray)[N, d]: gradient of energy evaluated at points
         """
         # Gradient of 0.5 * x^T A x is A x
         grad_x = x @ self.A
@@ -55,7 +55,7 @@ class QuadraticEnergy(BaseEnergy):
         Args:
             n (tuple): shape of sample
         Returns:
-            sample (Tensor)[n, d]: samples
+            sample (ndarray)[n, d]: samples
         """
         # Sample from a multivariate normal distribution with mean 0 and covariance matrix inv(A)
         sample = np.random.multivariate_normal(np.zeros(self.dim), np.linalg.inv(self.A), size = n)
@@ -69,11 +69,11 @@ class QuadraticEnergy(BaseEnergy):
 
     def exact_eigfunctions(self, x, m):
         """
-        Evaluate first m exact eigenfunctions at points x, assuming A = I
+        Evaluate first m exact eigenfunctions at points x, assuming A is diagonal
         Args:
-            x (array)[n,d]: evaluation points
+            x (ndarray)[n,d]: evaluation points
         Returns:
-            fx (array)[n,m]: first m eigenfunction evaluations
+            fx (ndarray)[n,m]: first m eigenfunction evaluations
         """
         if self.compute_indices != m:
             self._compute_indices(m)
@@ -97,11 +97,11 @@ class QuadraticEnergy(BaseEnergy):
     def smallest_combinations(x, m):
         """
         Args:
-            x (array)[d]: input array of eigenvalues of A
+            x (ndarray)[d]: input array of eigenvalues of A
             m (int) 
         Returns:
-            vals (array)[m]: smallest linear combinations of eigenvalues
-            vecs (array)[m,d]: indices of those combinations
+            vals (ndarray)[m]: smallest linear combinations of eigenvalues
+            vecs (ndarray)[m,d]: indices of those combinations
         """
         n = len(x)
         

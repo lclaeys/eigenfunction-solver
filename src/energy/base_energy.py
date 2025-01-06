@@ -11,9 +11,9 @@ class BaseEnergy():
         Evaluate energy at batch
 
         Args:
-            x (Tensor)[N, d]: points to evaluate at
+            x (ndarray)[N, d]: points to evaluate at
         Returns:
-            energy (Tensor)[N]: energy evaluated at points
+            energy (ndarray)[N]: energy evaluated at points
         """
         raise NotImplementedError
     
@@ -22,9 +22,9 @@ class BaseEnergy():
         Evaluate gradient of energy at batch
 
         Args:
-            x (Tensor)[N, d]: points to evaluate
+            x (ndarray)[N, d]: points to evaluate
         Returns:
-            grad_x (Tensor)[N, d]: gradient of energy evaluated at points
+            grad_x (ndarray)[N, d]: gradient of energy evaluated at points
         """
         raise NotImplementedError
     
@@ -33,8 +33,8 @@ class BaseEnergy():
         Compute exact samples from stationary measure
 
         Args:
-            n (Tensor)[shape]: shape of sample
+            n (ndarray)[shape]: shape of sample
         Returns:
-            sample (Tensor)[shape, d]: samples
+            sample (ndarray)[shape, d]: samples
         """
         raise NotImplementedError

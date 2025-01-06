@@ -10,10 +10,10 @@ class BaseKernel():
             Evaluate kernels with base points x at points y
 
             Args:
-                x (Tensor)[nx, d]: base points for kernel evaluation
-                y (Tensor)[ny, d]: evaluation points for kernel evaluation
+                x (ndarray)[nx, d]: base points for kernel evaluation
+                y (ndarray)[ny, d]: evaluation points for kernel evaluation
             Returns:
-                k_xy (Tensor)[nx,ny]: k_xy(i,j) = k(x_i,y_j)
+                k_xy (ndarray)[nx,ny]: k_xy(i,j) = k(x_i,y_j)
         """
         pass
     
@@ -22,10 +22,10 @@ class BaseKernel():
             Evaluate kernel gradient with base points x at points y
 
             Args:
-                x (Tensor)[n, d]: evaluation points for kernel gradient evaluation
-                y (Tensor)[p, d]: base points for kernel gradient evaluation
+                x (ndarray)[n, d]: evaluation points for kernel gradient evaluation
+                y (ndarray)[p, d]: base points for kernel gradient evaluation
             Returns:
-                grad_k_xy (Tensor)[n,p,d]: grad_k_xy(i,j) = grad k_{y_j}(x_i)
+                grad_k_xy (ndarray)[n,p,d]: grad_k_xy(i,j) = grad k_{y_j}(x_i)
         """
         pass
     
@@ -34,10 +34,10 @@ class BaseKernel():
             Evaluate kernel laplacian with base points x at points y
 
             Args:
-                x (Tensor)[n, d]: evaluation points for kernel laplacian evaluation
-                y (Tensor)[p, d]: base points for kernel laplacian evaluation
+                x (ndarray)[n, d]: evaluation points for kernel laplacian evaluation
+                y (ndarray)[p, d]: base points for kernel laplacian evaluation
             Returns:
-                delta_k_xy (Tensor)[n,p]: delta_k_xy(i,j) = div(grad(k_{y_j}))(x_i)
+                delta_k_xy (ndarray)[n,p]: delta_k_xy(i,j) = div(grad(k_{y_j}))(x_i)
         """
         pass
 

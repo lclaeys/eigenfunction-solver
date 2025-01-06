@@ -9,21 +9,26 @@ class GalerkinSolver(BaseSolver):
     Galerkin solver from Cabannes et al. 2024
     """
     def __init__(self, energy, samples, params, *args, **kwargs):
+        """
+        Args:
+            energy (BaseEnergy): energy function
+            samples (ndarray): samples
+            params (dict): parameters for solver
+                num_samples (int): number of samples to use when estimatating expectations wrt mu
+                verbose (bool): whether to print outputs
+        """
         super().__init__(energy, *args, **kwargs)
         self.dim = energy.dim
         self.verbose = params.get('verbose',False)
-        self.normalize = params.get('normalize', False)
         self.samples = samples
         self.num_samples = params.get('num_samples',10000)
-             
     
     def fit(self, basis, k = 16, L_reg = 0, phi_reg = 0, seed = 42):
         """
         Fit the eigenfunctions.
 
         Args:
-            data (Tensor)[n,d]: samples from stationary distribution
-            basis (Basis): basis functions
+            basis (Basis): basis functions object
             k (int): number of eigenfunctions to compute
             L_reg (float): regularizer for L
             phi_reg (float): regularizer for phi
@@ -53,26 +58,7 @@ class GalerkinSolver(BaseSolver):
             if self.verbose:
                 print('Error solving GEVD')
             return None
-        # try:
-        #     psi = np.linalg.cholesky(phi)
-        # except RuntimeError:
-        #     if self.verbose:
-        #             print('Error decomposing phi.')
-        #     return None
-
-        # psi_inv = np.linalg.inv(psi)
-        # C = psi_inv @ L @ psi_inv.T
-
-        # eigvals, eigvecs = np.linalg.eigh(C)
-        # eigvecs = eigvecs.T@psi_inv
-
-        # if self.verbose:
-        #     orth_error = np.mean((eigvecs@phi@eigvecs.T-np.eye(eigvecs.shape[0]))**2)
-        #     print(f'Orthogonality error: {orth_error}')
-
-        #     l_error = np.mean((phi@eigvecs.T@np.diag(eigvals)@eigvecs@phi.T-L)**2)
-        #     print(f'L error: {l_error}')
-
+  
         self.eigvals = eigvals
         self.eigvecs = eigvecs
         self.basis = basis
@@ -90,9 +76,9 @@ class GalerkinSolver(BaseSolver):
         Evaluate learned eigenfunction at points x.
 
         Args:
-            x (Tensor)[n,d]: points at which to evaluate
+            x (ndarray)[n,d]: points at which to evaluate
         Returns:
-            fx (Tensor)[n,m]: learned eigenfunctions evaluated at points x.
+            fx (ndarray)[n,m]: learned eigenfunctions evaluated at points x.
         """
         fx = self.basis(x)@self.eigvecs
 
@@ -103,9 +89,9 @@ class GalerkinSolver(BaseSolver):
         Evaluate gradient of learned eigenfunction at points x.
 
         Args:
-            x (Tensor)[n,d]: points at which to evaluate
+            x (ndarray)[n,d]: points at which to evaluate
         Returns:
-            grad_fx (Tensor)[n,m,d]: gradient of learned eigenfunctions evaluated at points x.
+            grad_fx (ndarray)[n,m,d]: gradient of learned eigenfunctions evaluated at points x.
         """
         grad_basis = self.basis.grad(x)
 
@@ -118,9 +104,9 @@ class GalerkinSolver(BaseSolver):
         Evaluate laplacian of learned eigenfunction at points x.
 
         Args:
-            x (Tensor)[n,d]: points at which to evaluate
+            x (ndarray)[n,d]: points at which to evaluate
         Returns:
-            delta_fx (Tensor)[n,m]: laplacian of learned eigenfunctions evaluated at points x.
+            delta_fx (ndarray)[n,m]: laplacian of learned eigenfunctions evaluated at points x.
         """
         delta_basis = self.basis.laplacian(x)
 
@@ -133,9 +119,9 @@ class GalerkinSolver(BaseSolver):
         Evaluate Lf of learned eigenfunction at points x.
 
         Args:
-            x (Tensor)[n,d]: points at which to evaluate
+            x (ndarray)[n,d]: points at which to evaluate
         Returns:
-            Lfx (Tensor)[n,m]: Lf evaluated at points x.
+            Lfx (ndarray)[n,m]: Lf evaluated at points x.
         """
 
         energy_grad = self.energy.grad(x)
@@ -146,7 +132,11 @@ class GalerkinSolver(BaseSolver):
     
     def fit_eigvals(self, x):
         """
-            predict eigvals using OLS
+        fit eigvals using OLS
+        Args:
+            x (ndarray): points to use for fitting
+        Returns:
+            fitted_eigvals (ndarray): k fitted eigvals 
         """
         self.fx = self.predict(x)
         self.Lfx = self.predict_Lf(x)
@@ -161,7 +151,7 @@ class GalerkinSolver(BaseSolver):
         Args:
             basis (Basis): basis functions
         Returns:
-            L (Tensor)[p,p]: matrix L
+            L (ndarray)[p,p]: matrix L
         """
         x = self.rng.choice(self.samples, size = self.num_samples, axis=0)
 
@@ -196,7 +186,7 @@ class GalerkinSolver(BaseSolver):
         Args:
             basis (Basis): basis functions
         Returns:
-            phi (Tensor)[p,p]: matrix Phi
+            phi (ndarray)[p,p]: matrix Phi
         """
         x = self.rng.choice(self.samples, size = self.num_samples, axis=0)
 
