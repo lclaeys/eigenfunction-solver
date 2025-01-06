@@ -63,11 +63,11 @@ class GalerkinSolver(BaseSolver):
         self.eigvecs = eigvecs
         self.basis = basis
 
-        if self.normalize:
-            phi = self.compute_phi(basis)
-            eigvecs_norm = np.diag(self.eigvecs.T@phi@self.eigvecs)
-            print(eigvecs_norm)
-            self.eigvecs = self.eigvecs/eigvecs_norm[None,:]
+        # if self.normalize:
+        #     phi = self.compute_phi(basis)
+        #     eigvecs_norm = np.diag(self.eigvecs.T@phi@self.eigvecs)
+        #     print(eigvecs_norm)
+        #     self.eigvecs = self.eigvecs/eigvecs_norm[None,:]
 
         return self
     

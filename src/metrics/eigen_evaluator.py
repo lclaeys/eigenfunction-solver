@@ -225,7 +225,7 @@ class EigenEvaluator():
             for i in range(k):
                 ax[i].plot(t,eigfuncs[:,i],lw=2,color='black',label='true')
                 ax[i].plot(t,rotated_fx[:,i],lw=2,color='blue',label='pred')
-                ax[i].plot(t,rotated_Lfx[:,i]/eigvals[i],lw=2,color='red',label='Lfx/lambda')
+                ax[i].plot(t,rotated_Lfx[:,i]/fitted_eigvals[i],lw=2,color='red',label='Lfx/lambda')
                 ax[i].legend()
                 ax[i].set_title(f'True eigval: {eigvals[i]}. Predicted eigval: {solver.eigvals[i]:.3f}. Fitted eigval: {fitted_eigvals[i]:.3f}')
         
@@ -274,7 +274,7 @@ class EigenEvaluator():
             
             for i in range(k):
                 zhat = rotated_fx[:,i].reshape(tx.shape)
-                Lzhat = rotated_Lfx[:,i].reshape(tx.shape)/eigvals[i]
+                Lzhat = rotated_Lfx[:,i].reshape(tx.shape)/fitted_eigvals[i]
                 z = eigfuncs[:,i].reshape(tx.shape)
                 # Determine the global min and max for consistent color mapping
                 z_min = min(z.min(), zhat.min(), Lzhat.min())
