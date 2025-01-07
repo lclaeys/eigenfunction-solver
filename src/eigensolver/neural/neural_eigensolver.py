@@ -2,6 +2,8 @@ import torch.nn
 import torch
 import importlib
 import numpy as np
+from scipy.linalg import eigh
+
 from src.eigensolver.base_eigensolver import BaseSolver
 from src.eigensolver.neural.loss.orth_loss import BasicOrthogonalityLoss, CovOrthogonalityLoss
 from src.eigensolver.neural.loss.variational_loss import VariationalLoss
@@ -24,6 +26,7 @@ class NeuralSolver(BaseSolver):
                 beta (float): regularization parameter. Loss is beta*var_loss + orth_loss
                 k (int): number of eigenfunctions to compute
                 batch_size (int): batch size used during training
+                pca_reg (float): regularizer added to covariance matrix for PCA
                 num_samples (int): number of samples used to estimate expectation for PCA
         """
         super().__init__(energy, *args, **kwargs)
@@ -34,7 +37,7 @@ class NeuralSolver(BaseSolver):
         self.k = params.get('k', 1)
         self.num_samples = params.get('num_samples',10000)
         self.batch_size = params.get('batch_size',5000)
-
+        self.pca_reg = params.get('pca_reg', 1e-6)
         self.dim = energy.dim
 
         # convert samples to tensor
@@ -106,22 +109,30 @@ class NeuralSolver(BaseSolver):
         """
         Performs PCA to compute eigenfunctions and eigenvalues under the assumption of convergence.
         
-        The rotation that is to be applied to the outputs of the network is saved under self.rotation (on self.device)
+        The rotation that is to be applied to the outputs of the network is saved under self.rotation (on CPU)
         The eigenvalues obtained from this are saved under self.eigvals
         """
         with torch.no_grad():
             x_pca = self.samples[:self.num_samples].to(self.device)
             fx_pca = self.model(x_pca)[:,1:]
+
+            # higher precision for eigh
+            fx_pca = np.array(fx_pca.to('cpu'),dtype=np.float64)
             
-            cov = torch.cov(fx_pca.T)
+            cov = np.sum(fx_pca[:,:,None]*fx_pca[:,None,:],axis=0)/fx_pca.shape[0]
+            
+            error = eigh(cov, eigvals_only=True, subset_by_index=[0, 0])[0]
+            if error < 0:
+                self.pca_reg += -error*1.1
 
-            D, U = torch.linalg.eigh(cov)
+            cov = cov + self.pca_reg*np.eye(cov.shape[0])
 
-            self.eigvals = torch.zeros(self.k)
+            D, U = np.linalg.eigh(cov)
+            self.eigvals = np.zeros(self.k)
             self.eigvals[1:] = 2/self.beta*(1-D)
-            self.rotation = U@torch.diag(D**(-1/2))
-            _, self.indices = torch.sort(self.eigvals)
-            self.eigvals = self.eigvals[self.indices].numpy()
+            self.rotation = U@np.diag(D**(-1/2))
+            self.indices = np.argsort(self.eigvals)
+            self.eigvals = self.eigvals[self.indices]
 
             # TODO implement fitting of eigvals. For now this does not yet work because predict_Lfx does not work.
             self.fitted_eigvals = self.eigvals
@@ -138,12 +149,14 @@ class NeuralSolver(BaseSolver):
         with torch.no_grad():
             if self.rotation is None:
                 self.compute_eigfuncs()
-                
+
             x = torch.tensor(x,device = self.device, dtype=torch.float32)
             outputs = self.model(x)
+
+            outputs = np.array(outputs.to('cpu'),dtype=np.float64)
             outputs[:, 1:] = outputs[:, 1:]@self.rotation
 
-            return outputs[:, self.indices].cpu().numpy()
+            return outputs[:, self.indices]
     
     def predict_grad(self, x):
         """

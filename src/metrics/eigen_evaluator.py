@@ -328,6 +328,11 @@ class EigenEvaluator():
                 # Determine the global min and max for consistent color mapping
                 z_min = min([z.min() for z in zvalues])
                 z_max = max([z.max() for z in zvalues])
+                
+                # avoid error if functions are constant
+                if z_min == z_max:
+                    z_min -= 1e-6
+                    z_max += 1e-6
 
                 if num_plots > 1:
                     for j in range(num_plots):
