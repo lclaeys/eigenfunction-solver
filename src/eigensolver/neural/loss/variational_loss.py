@@ -14,6 +14,8 @@ class VariationalLoss(nn.Module):
     def forward(self, grad_f):
         """
         Args:
-            grad_f (torch.tensor)[N, m, d]
+            grad_f (tensor)[N, m, d]: gradient of functions evaluated at N points
+        Returns:
+            var_loss (tensor): variational loss 
         """
         return torch.sum(grad_f**2) / grad_f.shape[0]

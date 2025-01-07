@@ -13,10 +13,13 @@ class BasicOrthogonalityLoss(nn.Module):
     def forward(self, fx):
         """
         Args:
-            fx (torch.tensor)[N, m]
+            fx (torch.tensor)[N, m]: functions evaluated at N points
+        Returns:
+            loss (torch.tensor): orthogonality loss
         """
-        return torch.sum((torch.mean(fx[:,:,None]*fx[:,None,:],dim=0) - torch.eye(fx.shape[1]))**2)
-    
+        return torch.sum((torch.mean(fx[:,:,None]*fx[:,None,:],dim=0) - torch.eye(fx.shape[1],device=fx.device))**2)
+
+# TODO Check this, add more types of orthogonality loss
 class CovOrthogonalityLoss(nn.Module):
     """
     Covariance orthogonality loss:
@@ -31,4 +34,4 @@ class CovOrthogonalityLoss(nn.Module):
         Args:
             fx (torch.tensor)[N, m]
         """
-        return torch.sum((torch.cov(fx) - torch.eye(fx.shape[1]))**2)
+        return torch.sum((torch.cov(fx) - torch.eye(fx.shape[1],device=fx.device))**2)
