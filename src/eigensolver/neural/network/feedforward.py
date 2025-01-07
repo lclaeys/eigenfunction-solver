@@ -3,7 +3,7 @@ import torch.nn as nn
 
 class FeedForwardNetwork(nn.Module):
     """
-    A customizable feedforward neural network.
+    Simple feed forward neural network with customizable layer dimensions.
     """
     def __init__(self, layer_dims):
         """
@@ -45,7 +45,7 @@ class FeedForwardNetwork(nn.Module):
     
 class ConstantFFN(nn.Module):
     """
-    FFN with first output constant
+    FFN with first output constant equal to 1 (first eigenfunction is constant)
     """
     def __init__(self, layer_dims):
         """
