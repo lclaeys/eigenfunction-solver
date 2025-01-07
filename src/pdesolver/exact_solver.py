@@ -1,52 +1,55 @@
 import numpy as np
 
-class ExactSolver():
-    def __init__(self, energy):
-        self.dim = energy.dim
-        self.samples = self.energy.exact_samples(50000)
-        self.m_computed = 0
-        self.x = None
-
-    def inner_prod(self, f, m=1):
+class ExactEigenSolver():
+    """
+    Class for solving the PDE by approximating the initial condition using the exact eigenfunctions
+    """
+    def __init__(self, energy, samples):
         """
-        Returns the inner product between the function f and the mth eigenfunction (starting from m=1)
+        Args:
+            energy (BaseEnergy): energy object
+            samples (ndarray): samples used to compute inner product
+        """
+        self.dim = energy.dim
+        self.samples = samples
+
+    def inner_prod(self, f, k=1):
+        """
+        Returns the inner product between the function f and the kth eigenfunction (starting from m=1)
         Args:
             f (Function): function to compute inner products with. Should allow vectorized inputs
+            k (int)
         Returns
-            inner_prod: inner prod between f and mth eigenfunction
+            inner_prod: inner prod between f and k-th eigenfunction
         
         """
-        if self.m_computed < m:
-            self.exact_eval = m
-            self.eigvals = self.energy.exact_eigvals(m)
-            self.eigfuncs = self.energy.exact_eigfunctions(self.samples, m)
+        if self.m_computed < k:
+            self.exact_eval = k
+            self.eigvals = self.energy.exact_eigvals(k)
+            self.eigfuncs = self.energy.exact_eigfunctions(self.samples, k)
         
-        inner_prod = np.sum(f(self.samples)*self.eigfuncs[:,m-1],axis=0)
+        inner_prod = np.sum(f(self.samples)*self.eigfuncs[:,k-1],axis=0)
 
         return inner_prod
 
-    def solve(self, f, t, x, eps = 1e-6):
+    def solve(self, f, t, x, k):
         """
         Solves the PDE with initial condition f (function) at times t and positions x
         Args:
             f (Function): initial condition
             t (array)[T]: times at which to evaluate
             x (array)[n,d]: points where to evaluate
-            eps (float): threshold determining when to stop calculation of inner product
+            k (int): number of eigenfunctions to use in the approximation
         Returns:
-            sol (array)[n,T]: solution of PDE at points x and times t
+            sol (array)[n,T]: approximate solution of PDE at points x and times t
         """
 
         inner_prods = []
-        inner_prod = 0
-        m = 1
+        i = 1
         sol = np.zeros([x.shape[0],len(t)])
-        while inner_prod > eps or m <= 2:
-            inner_prod = self.inner_prod(f,m)
+        while i <= k:
+            inner_prod = self.inner_prod(f,i)
             inner_prods.append(inner_prod)
-            sol += np.exp(self.eigvals[m-1]*t)[None,:]
-        pass
+            sol += np.exp(self.eigvals[i-1]*t)[None,:]
         
-    
-
-    
+        return sol
