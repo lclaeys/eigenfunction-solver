@@ -27,12 +27,15 @@ class FittedEigenSolver():
         Returns:
             sol (array)[n,T]: approximate solution of PDE at points x and times t
         """
-
-        self.eigvals = self.solver.fit_eigvals(k)
+        
+        if hasattr(self.solver, 'fitted_eigvals'):
+            self.eigvals = self.solver.fitted_eigvals[:k]
+        else:
+            self.eigvals = self.solver.eigvals[:k]
 
         # (N,k)
-        self.sample_fx = self.solver.predict(self.samples, k)
-        self.fx = self.solver.predict(x, k)
+        self.sample_fx = self.solver.predict(self.samples)[:,:k]
+        self.fx = self.solver.predict(x)[:,:k]
 
         # (N,)
         self.sample_funcx = func(self.samples)
