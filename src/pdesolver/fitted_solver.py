@@ -1,18 +1,20 @@
 import numpy as np
 
-class ExactEigenSolver():
+class FittedEigenSolver():
     """
-    Class for solving the PDE by approximating the initial condition using the exact eigenfunctions
+    Class for solving the PDE by approximating the initial condition using fitted eigenfunctions
     """
-    def __init__(self, energy, samples):
+    def __init__(self, energy, samples, solver):
         """
         Args:
             energy (BaseEnergy): energy object
             samples (ndarray): samples used to compute inner product
+            solver (BaseSolver): solver object
         """
         self.dim = energy.dim
         self.samples = samples
         self.energy = energy
+        self.solver = solver
 
     def solve(self, func, t, x, k):
         """
@@ -26,11 +28,11 @@ class ExactEigenSolver():
             sol (array)[n,T]: approximate solution of PDE at points x and times t
         """
 
-        self.eigvals = self.energy.exact_eigvals(k)
+        self.eigvals = self.solver.fit_eigvals(k)
 
         # (N,k)
-        self.sample_fx = self.energy.exact_eigfunctions(self.samples, k)
-        self.fx = self.energy.exact_eigfunctions(x, k)
+        self.sample_fx = self.solver.predict(self.samples, k)
+        self.fx = self.solver.predict(x, k)
 
         # (N,)
         self.sample_funcx = func(self.samples)
