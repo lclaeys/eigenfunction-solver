@@ -53,7 +53,7 @@ class GalerkinSolver(BaseSolver):
         phi = phi0 + phi_reg*np.eye(phi0.shape[0])
 
         try:
-            eigvals, eigvecs = eigh(L, phi, subset_by_index=[0, k])
+            eigvals, eigvecs = eigh(L, phi, subset_by_index=[0, k-1])
         except LinAlgError as e:
             if self.verbose:
                 print('Error solving GEVD')
