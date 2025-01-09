@@ -133,44 +133,6 @@ class EigenEvaluator():
 
                 self.rotated_fx = rotated_fx
                 out[metric] = np.cumsum(errs)/np.arange(1,k+1)
-
-            if metric == "linear_reconstruction":
-                """
-                R^2 of reconstructing the function x |-> sum_i (x_i) using the first k learned eigenfunctions.
-                """
-                if fx is None:
-                    fx = solver.predict(x)[:,:k]
-                funcx = np.sum(x,axis=1)
-                Lfuncx = np.sum(self.energy.grad(x),axis=1)
-                inner_prods = np.sum(funcx[:,None]*fx,axis=0)/x.shape[0]
-                errs = []
-                L_errs = []
-
-                for i in range(1,k+1):
-                    errs.append(1-np.mean((funcx - inner_prods[:i]@(fx[:,:i]).T)**2)/np.mean((funcx - np.mean(funcx))**2))
-                    L_errs.append(1-np.mean((Lfuncx - (solver.fitted_eigvals[:i]*inner_prods[:i])@(fx[:,:i]).T)**2)/np.mean(Lfuncx**2))
-
-                out[metric] = np.array(errs)
-                out['L_'+metric] = np.array(L_errs)
-            
-            if metric == "quadratic_reconstruction":
-                """
-                R^2 of reconstructing the function x |-> 1/2 * sum_i (x_i^2) using the first k learned eigenfunctions.
-                """
-                if fx is None:
-                    fx = solver.predict(x)[:,:k]
-                funcx = 1/2*np.sum(x**2,axis=1)
-                Lfuncx = np.sum(self.energy.grad(x)*x,axis=1) - self.energy.dim
-                inner_prods = np.sum(funcx[:,None]*fx,axis=0)/x.shape[0]
-                errs = []
-                L_errs = []
-
-                for i in range(1,k+1):
-                    errs.append(1-np.mean((funcx - inner_prods[:i]@(fx[:,:i]).T)**2)/np.mean((funcx - np.mean(funcx))**2))
-                    L_errs.append(1-np.mean((Lfuncx - (solver.fitted_eigvals[:i]*inner_prods[:i])@(fx[:,:i]).T)**2)/np.mean(Lfuncx**2))
-
-                out[metric] = np.array(errs)
-                out['L_'+metric] = np.array(L_errs)
                 
         return out
     

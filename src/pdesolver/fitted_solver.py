@@ -20,19 +20,22 @@ class FittedEigenSolver():
         """
         Solves the PDE with initial condition func (function) at times t and positions x
         Args:
-            func (Function): initial condition
+            func (Function): initial condition, function R^N -> R
             t (array)[T]: times at which to evaluate
             x (array)[n,d]: points where to evaluate
-            k (int): number of eigenfunctions to use in the approximation
+            k (int): maximum number of eigenfunctions to use in the approximation
         Returns:
-            sol (array)[n,T]: approximate solution of PDE at points x and times t
+            sol (array)[k,n,T]: approximate solution of PDE at points x and times t using increasing number of eigenfunctions
         """
-
-        self.eigvals = self.solver.fit_eigvals(k)
+        
+        if hasattr(self.solver, 'fitted_eigvals'):
+            self.eigvals = self.solver.fitted_eigvals[:k]
+        else:
+            self.eigvals = self.solver.eigvals[:k]
 
         # (N,k)
-        self.sample_fx = self.solver.predict(self.samples, k)
-        self.fx = self.solver.predict(x, k)
+        self.sample_fx = self.solver.predict(self.samples)[:,:k]
+        self.fx = self.solver.predict(x)[:,:k]
 
         # (N,)
         self.sample_funcx = func(self.samples)
@@ -41,7 +44,7 @@ class FittedEigenSolver():
         inner_prods = np.mean(self.sample_fx*self.sample_funcx[:,None],axis=0)
         
         # sum over first index of (k,n,T)
-        sol = np.sum(inner_prods[:,None,None] * 
+        sol = np.cumsum(inner_prods[:,None,None] * 
                      np.exp(-self.eigvals[:,None,None]*t[None,None,:]) * 
                      (self.fx.T)[:,:,None],
                      axis = 0)
