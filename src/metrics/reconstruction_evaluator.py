@@ -48,7 +48,7 @@ class ReconstructionEvaluator():
         errs = []
         L_errs = []
 
-        for i in range(1,fx.shape[1]):
+        for i in range(1,fx.shape[1]+1):
             reconstruction = inner_prods[:i]@(fx[:,:i]).T
             errs.append(np.mean((funcx - reconstruction)**2)/var_funcx)
 
@@ -88,9 +88,9 @@ class ReconstructionEvaluator():
         
         inner_prods = np.sum(funcsamples[:,None]*fsamples,axis=0)/samples.shape[0]
 
-        fig, axes = plt.subplots(fx.shape[1]-1,2,figsize=(10,(fx.shape[1]-1)*3))
+        fig, axes = plt.subplots(fx.shape[1],2,figsize=(10,(fx.shape[1])*3))
        
-        for i in range(1,fx.shape[1]):
+        for i in range(1,fx.shape[1]+1):
             reconstruction = inner_prods[:i]@(fx[:,:i]).T
             err = np.mean((funcx - reconstruction)**2)/var_funcx
 
