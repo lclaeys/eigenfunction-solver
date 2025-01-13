@@ -1,6 +1,7 @@
 import numpy as np
 from src.energy.base_energy import BaseEnergy
 
+#TODO: maybe this is not very stable. See proposed GMM
 class GaussianMixture(BaseEnergy):
     """
     Energy function corresponding to a Gaussian mixture

@@ -63,6 +63,8 @@ class NeuralSolver(BaseSolver):
         self.rotation = None
         
 
+    # TODO: maybe add .fit() method ?
+
     def _compute_loss(self, model, x):
         """
         Compute the loss, given by beta*sum_i <grad f_i, grad_fi>_mu + orth_loss

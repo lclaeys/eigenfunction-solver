@@ -80,6 +80,7 @@ class QuadraticEnergy(BaseEnergy):
         Returns:
             fx (ndarray)[n,m]: first m eigenfunction evaluations
         """
+        # TODO: should A be diagonal or Id?
         if not np.allclose(self.A, np.diag(np.diag(self.A))):
             raise ValueError("Matrix A is not diagonal")
 
@@ -121,7 +122,7 @@ class QuadraticEnergy(BaseEnergy):
         visited = set()
         
         # Start with the combination (0, 0, ..., 0)
-        initial = (0, [0] * n)  # (S, a_vector)
+        initial = (0, [0] * n)  # (S, a_vector) # TODO: there are usually ome problems with initializations like [0]*n, is it OK here?
         heapq.heappush(heap, initial)
         visited.add(tuple([0] * n))
         

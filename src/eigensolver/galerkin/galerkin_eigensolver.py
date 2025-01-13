@@ -4,6 +4,7 @@ from src.eigensolver.base_eigensolver import BaseSolver
 from numpy.linalg import LinAlgError
 from scipy.linalg import eigh
 
+# TODO: general idea behind this solver
 class GalerkinSolver(BaseSolver):
     """
     Galerkin solver from Cabannes et al. 2024
@@ -20,6 +21,8 @@ class GalerkinSolver(BaseSolver):
         super().__init__(energy, *args, **kwargs)
         self.dim = energy.dim
         self.verbose = params.get('verbose',False)
+
+        # TODO: good choice for samples for energies where sampler is unavailable
         self.samples = samples
         self.num_samples = params.get('num_samples',10000)
     
@@ -39,6 +42,7 @@ class GalerkinSolver(BaseSolver):
         L = self.compute_L(basis)
         phi0 = self.compute_phi(basis)
 
+        # TODO: why here L and nor L + L_reg already?
         error = eigh(L, eigvals_only=True, subset_by_index=[0, 0])[0]
         if error < 0:
             L_reg += -error*10
