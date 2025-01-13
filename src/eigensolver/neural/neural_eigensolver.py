@@ -13,13 +13,14 @@ class NeuralSolver(BaseSolver):
     """
     Solver based on training a neural network to minimize regularized variational loss.
     """
-    def __init__(self, energy, samples, model, optimizer, params, *args, **kwargs):
+    def __init__(self, energy, samples, model, optimizer, params, scheduler = None, *args, **kwargs):
         """
         Args:
             energy (BaseEnergy): energy function
             samples (ndarray): samples from the stationary distribution
             model (nn.Module): neural network model
             optimizer (torch.optim.Optimizer): optimizer for training the model
+            scheduler (optional): scheduler for training
             params (dict): additional solver parameters:
                 device (torch.device): device on which to train the model
                 verbose (bool): whether to print additional output
@@ -33,12 +34,17 @@ class NeuralSolver(BaseSolver):
         
         self.device = params.get('device','cpu')
         self.verbose = params.get('verbose',False)
-        self.beta = params.get('beta', 1)
+        self.beta = params.get('beta', 1.0)
+        
         self.k = params.get('k', 1)
+        if self.beta is not torch.tensor:
+            self.beta = torch.ones(self.k)*self.beta
+
         self.num_samples = params.get('num_samples',10000)
         self.batch_size = params.get('batch_size',5000)
         self.pca_reg = params.get('pca_reg', 1e-6)
         self.dim = energy.dim
+        self.scheduler = scheduler
 
         # convert samples to tensor
         self.samples = torch.tensor(samples,dtype=torch.float32)
@@ -50,7 +56,7 @@ class NeuralSolver(BaseSolver):
         self.optimizer = optimizer
 
         # TODO: add flexibility here
-        self.var_loss = VariationalLoss()
+        self.var_loss = VariationalLoss(self.beta)
         self.orth_loss = BasicOrthogonalityLoss()
 
         self.dataloader = DataLoader(
@@ -61,6 +67,7 @@ class NeuralSolver(BaseSolver):
                         )
         
         self.rotation = None
+        self.laplacian = None
         
 
     def _compute_loss(self, model, x):
@@ -83,7 +90,7 @@ class NeuralSolver(BaseSolver):
         loss_1 = self.var_loss(grad_fx)  # Variational loss
         loss_2 = self.orth_loss(fx)      # Orthogonal loss
 
-        return self.beta*loss_1 + loss_2
+        return loss_1 + loss_2
         
     def train_epoch(self):
         """
@@ -102,6 +109,9 @@ class NeuralSolver(BaseSolver):
 
             loss.backward()  # Backward pass
             self.optimizer.step()  # Update model parameters
+        
+        if self.scheduler is not None:
+            self.scheduler.step()
         
         return loss.detach().cpu().numpy()
     
@@ -129,13 +139,10 @@ class NeuralSolver(BaseSolver):
 
             D, U = np.linalg.eigh(cov)
             self.eigvals = np.zeros(self.k)
-            self.eigvals[1:] = 2/self.beta*(1-D)
+            self.eigvals[1:] = 2/self.beta[1:]*(1-D)
             self.rotation = U@np.diag(D**(-1/2))
             self.indices = np.argsort(self.eigvals)
             self.eigvals = self.eigvals[self.indices]
-
-            # TODO implement fitting of eigvals. For now this does not yet work because predict_Lfx does not work.
-            self.fitted_eigvals = self.eigvals
 
     def predict(self,x):
         """
@@ -163,52 +170,79 @@ class NeuralSolver(BaseSolver):
         Evaluate gradient of learned eigenfunction at points x.
 
         Args:
-            x (Tensor)[n,d]: points at which to evaluate
+            x (ndarray)[n,d]: points at which to evaluate
         Returns:
-            grad_fx (Tensor)[n,m,d]: gradient of learned eigenfunctions evaluated at points x.
+            grad_fx (ndarray)[n,m,d]: gradient of learned eigenfunctions evaluated at points x.
         """
         # TODO Check this implementation
 
-        x = torch.tensor(x)
-        x = x.requires_grad_()
-        grad_outputs = torch.eye(self.k)[:,None,:].expand([self.k,x.shape[0],self.k])
+        x = torch.tensor(x, device = self.device, dtype = torch.float32)
+        # x = x.requires_grad_()
+        # grad_outputs = torch.eye(self.k,device=self.device)[:,None,:].expand([self.k,x.shape[0],self.k])
         
-        outputs = self.model(x)
-        grad_outputs = torch.autograd.grad(outputs = outputs, inputs = x, grad_outputs = grad_outputs, is_grads_batched=True, create_graph = False)[0].transpose(0,1)
+        # outputs = self.model(x)
+        # grad_outputs = torch.autograd.grad(outputs = outputs, inputs = x, grad_outputs = grad_outputs, is_grads_batched=True, create_graph = False)[0].transpose(0,1)
         
-        grad_outputs[:,1:,:] = torch.einsum('nmd, mm -> nmd', grad_outputs[:,1:,:], self.rotation)
+        def func(x):
+            return self.model(x)
 
-        return grad_outputs[:,self.indices,:].detach().numpy()
+        grad = torch.torch.func.jacrev(func)
+        batch_grad = torch.func.vmap(grad)
+
+        grad_outputs = batch_grad(x)
+
+        grad_outputs = grad_outputs.detach().cpu().numpy()
+
+        #grad_outputs[:,1:,:] = np.einsum('nmd, mm -> nmd', grad_outputs[:,1:,:], self.rotation)
+        grad_outputs[:,1:,:] = np.transpose(np.transpose(grad_outputs[:,1:,:],(0,2,1)) @ self.rotation, (0,2,1))
+
+        return grad_outputs[:,self.indices,:]
     
     def predict_laplacian(self, x):
         """
         Evaluate laplacian of learned eigenfunction at points x.
 
         Args:
-            x (Tensor)[n,d]: points at which to evaluate
+            x (ndarray or tensor)[n,d]: points at which to evaluate
         Returns:
-            delta_fx (Tensor)[n,m]: laplacian of learned eigenfunctions evaluated at points x.
+            delta_fx (ndarray)[n,m]: laplacian of learned eigenfunctions evaluated at points x.
         """
-        # TODO
-        raise NotImplementedError
+        def func(x):
+            return self.model(x)
+
+        hessian = torch.func.hessian(func)
+        laplacian = torch.vmap(lambda x: torch.diagonal(hessian(x),dim1=1,dim2=2).sum(dim=1))
         
+        with torch.no_grad():
+            x = torch.tensor(x,device = self.device, dtype=torch.float32)
+            laplacian_outputs =  laplacian(x)
+
+        laplacian_outputs = np.array(laplacian_outputs.to('cpu'),dtype=np.float64)
+        laplacian_outputs[:,1:] = laplacian_outputs[:,1:]@self.rotation
+        
+        return laplacian_outputs[:, self.indices]
     
     def predict_Lf(self, x):
         """
         Evaluate Lf of learned eigenfunction at points x.
 
         Args:
-            x (Tensor)[n,d]: points at which to evaluate
+            x (ndarray)[n,d]: points at which to evaluate
         Returns:
-            Lfx (Tensor)[n,m]: Lf evaluated at points x.
+            Lfx (ndarray)[n,m]: Lf evaluated at points x.
         """
-        # TODO
-        raise NotImplementedError
+
+        energy_grad = self.energy.grad(x)
+
+        Lfx = -self.predict_laplacian(x) + np.matmul(self.predict_grad(x), energy_grad[:,:,None]).squeeze(2)
+
+        return Lfx
     
     def fit_eigvals(self, x):
         """
             predict eigvals using OLS
         """
+        
         self.fx = self.predict(x)
         self.Lfx = self.predict_Lf(x)
 
