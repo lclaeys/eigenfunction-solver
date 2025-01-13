@@ -4,6 +4,7 @@ from itertools import combinations
 
 from src.energy.base_energy import BaseEnergy
 from scipy.special import eval_hermitenorm
+from scipy.special import factorial
 
 class QuadraticEnergy(BaseEnergy):
     """
@@ -88,6 +89,10 @@ class QuadraticEnergy(BaseEnergy):
         fx = np.ones([x.shape[0],m])
         for i in range(m):
             hermite_evals = eval_hermitenorm(self.indices[i],x*np.sqrt(self.diag_A)[None,:])
+            norms = np.sqrt(factorial(self.indices[i]))
+
+            hermite_evals /= norms
+
             if len(hermite_evals.shape) != 1:
                 hermite_evals = np.prod(hermite_evals,axis=1)
             fx[:,i] *= hermite_evals
