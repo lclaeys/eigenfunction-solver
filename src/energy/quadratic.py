@@ -65,8 +65,16 @@ class QuadraticEnergy(BaseEnergy):
         sample = np.random.multivariate_normal(np.zeros(self.dim), self.inv_A, size = n)
         return sample
     
-    # TODO: ask how eigenpairs are computed exactly. Maybe formula?
     def exact_eigvals(self, m):
+        """
+        Compute m smallest exact eigenvalues.
+        If A = diag(a_1, ..., a_d), then each eigenvalue can be associated with a tuple
+        (n_1, ..., n_d), and the corresponding eigenvalue is n_1 a_1 + ... + n_d a_d
+        Args:
+            m (Int)
+        Returns:
+            eigvals (ndarray)
+        """
         if self.compute_indices != m:
             self._compute_indices(m)
 
@@ -80,7 +88,6 @@ class QuadraticEnergy(BaseEnergy):
         Returns:
             fx (ndarray)[n,m]: first m eigenfunction evaluations
         """
-        # TODO: should A be diagonal or Id?
         if not np.allclose(self.A, np.diag(np.diag(self.A))):
             raise ValueError("Matrix A is not diagonal")
 
@@ -122,7 +129,7 @@ class QuadraticEnergy(BaseEnergy):
         visited = set()
         
         # Start with the combination (0, 0, ..., 0)
-        initial = (0, [0] * n)  # (S, a_vector) # TODO: there are usually ome problems with initializations like [0]*n, is it OK here?
+        initial = (0, [0] * n)  # (S, a_vector)
         heapq.heappush(heap, initial)
         visited.add(tuple([0] * n))
         

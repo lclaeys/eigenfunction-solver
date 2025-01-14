@@ -43,7 +43,6 @@ class EigenEvaluator():
                 out[metric] = np.cumsum(errs)/np.arange(1,k+1)
 
             if metric == "fitted_eigen_error":
-                # TODO: what is this for?
                 """
                 MSE of Lf(x) - lambda*f(x), computed using fitted eigenvalues.
                 """

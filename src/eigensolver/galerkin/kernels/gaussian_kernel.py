@@ -62,8 +62,3 @@ class GaussianKernel(BaseKernel):
         delta_k_xy = (-self.dim/self.scale**2 + distances**2/self.scale**4)*k_xy
 
         return delta_k_xy
-
-# TODO: is this necessary?
-def create_instance(params):
-    kernel = GaussianKernel(params)
-    return kernel

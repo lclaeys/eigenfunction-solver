@@ -42,12 +42,11 @@ class GalerkinSolver(BaseSolver):
         L = self.compute_L(basis)
         phi0 = self.compute_phi(basis)
 
-        # TODO: why here L and nor L + L_reg already?
-        error = eigh(L, eigvals_only=True, subset_by_index=[0, 0])[0]
+        error = eigh(L + L_reg, eigvals_only=True, subset_by_index=[0, 0])[0]
         if error < 0:
             L_reg += -error*10
         
-        error = eigh(phi0, eigvals_only=True, subset_by_index=[0, 0])[0]
+        error = eigh(phi0 + phi_reg, eigvals_only=True, subset_by_index=[0, 0])[0]
         if error < 0:
             phi_reg += -error*1.1
             if self.verbose:
