@@ -1,5 +1,8 @@
-numpy
+torch>=2.2.2
+numpy<2.0
 scipy
+seaborn
 tqdm
 matplotlib
 pandas
+ipywidgets

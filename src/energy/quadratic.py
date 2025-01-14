@@ -18,7 +18,10 @@ class QuadraticEnergy(BaseEnergy):
             A (ndarray): Positive semi-definite matrix (d, d)
         """
         super().__init__(*args, **kwargs)
+        if not np.all(np.linalg.eigvals(A) >= 0):
+            raise ValueError("Matrix A is not positive semi-definite")
         self.A = A
+        self.inv_A = np.linalg.inv(self.A)
         self.dim = self.A.shape[0]
         self.compute_indices = 0
         self.diag_A = np.diag(A)
@@ -59,10 +62,19 @@ class QuadraticEnergy(BaseEnergy):
             sample (ndarray)[n, d]: samples
         """
         # Sample from a multivariate normal distribution with mean 0 and covariance matrix inv(A)
-        sample = np.random.multivariate_normal(np.zeros(self.dim), np.linalg.inv(self.A), size = n)
+        sample = np.random.multivariate_normal(np.zeros(self.dim), self.inv_A, size = n)
         return sample
     
     def exact_eigvals(self, m):
+        """
+        Compute m smallest exact eigenvalues.
+        If A = diag(a_1, ..., a_d), then each eigenvalue can be associated with a tuple
+        (n_1, ..., n_d), and the corresponding eigenvalue is n_1 a_1 + ... + n_d a_d
+        Args:
+            m (Int)
+        Returns:
+            eigvals (ndarray)
+        """
         if self.compute_indices != m:
             self._compute_indices(m)
 
@@ -76,6 +88,9 @@ class QuadraticEnergy(BaseEnergy):
         Returns:
             fx (ndarray)[n,m]: first m eigenfunction evaluations
         """
+        if not np.allclose(self.A, np.diag(np.diag(self.A))):
+            raise ValueError("Matrix A is not diagonal")
+
         if self.compute_indices != m:
             self._compute_indices(m)
 
@@ -139,5 +154,5 @@ class QuadraticEnergy(BaseEnergy):
         return np.array(vals), np.array(vecs)
 
 
-        
+
 

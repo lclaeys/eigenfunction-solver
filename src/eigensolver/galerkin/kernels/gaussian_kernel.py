@@ -2,6 +2,9 @@ import numpy as np
 from src.eigensolver.galerkin.kernels.base_kernel import BaseKernel
 from scipy.spatial.distance import cdist
 
+# TODO: is this implementation optimal for large number of points and large dimension?
+# See: https://github.com/VivienCabannes/laplacian/tree/master/src/klap/kernels
+
 class GaussianKernel(BaseKernel):
     """
     Gaussian kernel, f(x,y) = exp(-||x-y||^2/(2*scale^2))
@@ -36,14 +39,14 @@ class GaussianKernel(BaseKernel):
                 grad_k_xy (ndarray)[n,p,d]: grad_k_xy(i,j) = grad k_{y_j}(x_i)
         """
         diffs = x[:,None,:]-y[None,:,:]
-        distances = cdist(x,y)
-        k_xy = np.exp(-distances**2/(2*self.scale**2))
+        k_xy = self.forward(x,y)
 
         grad_k_xy = -1/(self.scale**2)*diffs*k_xy[:,:,None]
 
         return grad_k_xy
     
     def laplacian(self, x, y):
+        # TODO: what formula is this based on? Is this optimal?
         """
             Evaluate kernel laplacian with base points x at points y
 
@@ -59,7 +62,3 @@ class GaussianKernel(BaseKernel):
         delta_k_xy = (-self.dim/self.scale**2 + distances**2/self.scale**4)*k_xy
 
         return delta_k_xy
-
-def create_instance(params):
-    kernel = GaussianKernel(params)
-    return kernel

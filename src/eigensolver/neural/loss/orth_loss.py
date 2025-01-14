@@ -20,6 +20,7 @@ class BasicOrthogonalityLoss(nn.Module):
         return torch.sum((torch.mean(fx[:,:,None]*fx[:,None,:],dim=0) - torch.eye(fx.shape[1],device=fx.device))**2)
 
 # TODO Check this, add more types of orthogonality loss
+# TODO: (Artur) Looks ok, but you maybe need to transpose fx matrix, as rows are variables in torch.cov
 class CovOrthogonalityLoss(nn.Module):
     """
     Covariance orthogonality loss:
