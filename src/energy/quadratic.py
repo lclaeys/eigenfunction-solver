@@ -18,7 +18,10 @@ class QuadraticEnergy(BaseEnergy):
             A (ndarray): Positive semi-definite matrix (d, d)
         """
         super().__init__(*args, **kwargs)
+        if not np.all(np.linalg.eigvals(A) >= 0):
+            raise ValueError("Matrix A is not positive semi-definite")
         self.A = A
+        self.inv_A = np.linalg.inv(self.A)
         self.dim = self.A.shape[0]
         self.compute_indices = 0
         self.diag_A = np.diag(A)
@@ -59,9 +62,10 @@ class QuadraticEnergy(BaseEnergy):
             sample (ndarray)[n, d]: samples
         """
         # Sample from a multivariate normal distribution with mean 0 and covariance matrix inv(A)
-        sample = np.random.multivariate_normal(np.zeros(self.dim), np.linalg.inv(self.A), size = n)
+        sample = np.random.multivariate_normal(np.zeros(self.dim), self.inv_A, size = n)
         return sample
     
+    # TODO: ask how eigenpairs are computed exactly. Maybe formula?
     def exact_eigvals(self, m):
         if self.compute_indices != m:
             self._compute_indices(m)
@@ -76,6 +80,10 @@ class QuadraticEnergy(BaseEnergy):
         Returns:
             fx (ndarray)[n,m]: first m eigenfunction evaluations
         """
+        # TODO: should A be diagonal or Id?
+        if not np.allclose(self.A, np.diag(np.diag(self.A))):
+            raise ValueError("Matrix A is not diagonal")
+
         if self.compute_indices != m:
             self._compute_indices(m)
 
@@ -114,7 +122,7 @@ class QuadraticEnergy(BaseEnergy):
         visited = set()
         
         # Start with the combination (0, 0, ..., 0)
-        initial = (0, [0] * n)  # (S, a_vector)
+        initial = (0, [0] * n)  # (S, a_vector) # TODO: there are usually ome problems with initializations like [0]*n, is it OK here?
         heapq.heappush(heap, initial)
         visited.add(tuple([0] * n))
         
@@ -139,5 +147,5 @@ class QuadraticEnergy(BaseEnergy):
         return np.array(vals), np.array(vecs)
 
 
-        
+
 

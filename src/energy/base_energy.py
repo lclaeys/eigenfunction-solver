@@ -9,6 +9,7 @@ class BaseEnergy():
     def forward(self, x):
         """
         Evaluate energy at batch
+        If distribution is \mu \prop exp(-E(x)), then this function should return E(x)
 
         Args:
             x (ndarray)[N, d]: points to evaluate at
