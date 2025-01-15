@@ -1,6 +1,5 @@
-import numpy as np
+import torch
 from src.eigensolver.galerkin.kernels.base_kernel import BaseKernel
-from scipy.spatial.distance import cdist
 
 # TODO: is this implementation optimal for large number of points and large dimension?
 # See: https://github.com/VivienCabannes/laplacian/tree/master/src/klap/kernels
@@ -23,8 +22,8 @@ class GaussianKernel(BaseKernel):
             Returns:
                 k_xy (ndarray)[n,p]: k_xy(i,j) = k(x_i,y_j)
         """
-        distances = cdist(x,y)
-        k_xy = np.exp(-distances**2/(2*self.scale**2))
+        distances = torch.cdist(x,y)
+        k_xy = torch.exp(-distances**2/(2*self.scale**2))
 
         return k_xy
     
@@ -56,8 +55,8 @@ class GaussianKernel(BaseKernel):
             Returns:
                 delta_k_xy (ndarray)[n,p]: delta_k_xy(i,j) = div(grad(k_{y_j}))(x_i)
         """
-        distances = cdist(x,y)
-        k_xy = np.exp(-distances**2/(2*self.scale**2))
+        distances = torch.cdist(x,y)
+        k_xy = torch.exp(-distances**2/(2*self.scale**2))
 
         delta_k_xy = (-self.dim/self.scale**2 + distances**2/self.scale**4)*k_xy
 

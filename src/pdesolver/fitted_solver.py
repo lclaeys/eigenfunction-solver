@@ -1,4 +1,4 @@
-import numpy as np
+import torch
 
 class FittedEigenSolver():
     """
@@ -41,12 +41,12 @@ class FittedEigenSolver():
         self.sample_funcx = func(self.samples)
 
         # (k,)
-        inner_prods = np.mean(self.sample_fx*self.sample_funcx[:,None],axis=0)
+        inner_prods = torch.mean(self.sample_fx*self.sample_funcx[:,None],dim=0)
         
         # sum over first index of (k,n,T)
-        sol = np.cumsum(inner_prods[:,None,None] * 
-                     np.exp(-self.eigvals[:,None,None]*t[None,None,:]) * 
+        sol = torch.cumsum(inner_prods[:,None,None] * 
+                     torch.exp(-self.eigvals[:,None,None]*t[None,None,:]) * 
                      (self.fx.T)[:,:,None],
-                     axis = 0)
+                     0)
         
         return sol
