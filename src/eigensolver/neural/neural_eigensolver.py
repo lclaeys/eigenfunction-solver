@@ -1,8 +1,6 @@
 import torch.nn
 import torch
 import importlib
-import numpy as np
-from scipy.linalg import eigh
 
 from src.eigensolver.base_eigensolver import BaseSolver
 from src.eigensolver.neural.loss.orth_loss import BasicOrthogonalityLoss, CovOrthogonalityLoss
@@ -17,7 +15,7 @@ class NeuralSolver(BaseSolver):
         """
         Args:
             energy (BaseEnergy): energy function
-            samples (ndarray): samples from the stationary distribution
+            samples (tensor): samples from the stationary distribution
             model (nn.Module): neural network model
             optimizer (torch.optim.Optimizer): optimizer for training the model
             scheduler (optional): scheduler for training
@@ -32,7 +30,8 @@ class NeuralSolver(BaseSolver):
         """
         super().__init__(energy, *args, **kwargs)
         
-        self.device = params.get('device','cpu')
+        self.model_device = params.get('model_device','cuda')
+        self.base_device = 'cpu'
         self.verbose = params.get('verbose',False)
         self.beta = params.get('beta', 1.0)
         
@@ -46,11 +45,8 @@ class NeuralSolver(BaseSolver):
         self.dim = energy.dim
         self.scheduler = scheduler
 
-        # convert samples to tensor
-        self.samples = torch.tensor(samples,dtype=torch.float32)
-
         # put model on device
-        self.model = model.to(self.device)
+        self.model = model.to(self.model_device)
 
         self.energy = energy
         self.optimizer = optimizer
@@ -59,6 +55,7 @@ class NeuralSolver(BaseSolver):
         self.var_loss = VariationalLoss(self.beta)
         self.orth_loss = BasicOrthogonalityLoss()
 
+        self.samples = samples
         self.dataloader = DataLoader(
                             samples,
                             batch_size=self.batch_size,
@@ -78,13 +75,13 @@ class NeuralSolver(BaseSolver):
 
         Args:
             model (nn.Module): model
-            x (torch.tensor): tensor on same device as model
+            x (torch.tensor on model_device): tensor on same device as model
         
         Returns:
-            loss (torch.tensor)
+            loss (torch.tensor on model_device)
         """
 
-        grad_outputs = torch.eye(self.k, device = self.device)[:,None,:].expand([self.k,x.shape[0],self.k])
+        grad_outputs = torch.eye(self.k, device = self.model_device)[:,None,:].expand([self.k,x.shape[0],self.k])
         
         fx = model(x)
         grad_fx = torch.autograd.grad(outputs = fx, inputs = x, grad_outputs = grad_outputs, is_grads_batched=True, create_graph=True)[0].transpose(0,1)
@@ -99,11 +96,11 @@ class NeuralSolver(BaseSolver):
         Train the model for one epoch.
         
         Returns:
-            loss (ndarray)
+            loss (tensor on cpu)
         """
 
         for batch_idx, batch in enumerate(self.dataloader):
-            batch = batch.to(self.device).to(dtype=torch.float32)
+            batch = batch.to(self.model_device)
             batch = batch.requires_grad_()
             self.optimizer.zero_grad()  # Clear gradients
 
@@ -115,7 +112,7 @@ class NeuralSolver(BaseSolver):
         if self.scheduler is not None:
             self.scheduler.step()
         
-        return loss.detach().cpu().numpy()
+        return loss.detach().cpu()
     
     def compute_eigfuncs(self):
         """
@@ -125,25 +122,27 @@ class NeuralSolver(BaseSolver):
         The eigenvalues obtained from this are saved under self.eigvals
         """
         with torch.no_grad():
-            x_pca = self.samples[:self.num_samples].to(self.device)
-            fx_pca = self.model(x_pca)[:,1:]
+            x_pca = self.samples[:self.num_samples].to(self.model_device)
+            fx_pca = self.model(x_pca)[:,1:].to('cpu')
 
             # higher precision for eigh
-            fx_pca = np.array(fx_pca.to('cpu'),dtype=np.float64)
+            fx_pca = fx_pca.double()
             
-            cov = np.sum(fx_pca[:,:,None]*fx_pca[:,None,:],axis=0)/fx_pca.shape[0]
+            cov = torch.sum(fx_pca[:,:,None]*fx_pca[:,None,:],dim=0)/fx_pca.size(0)
             
-            error = eigh(cov, eigvals_only=True, subset_by_index=[0, 0])[0]
+            error = torch.linalg.eigvalsh(cov)[0]
             if error < 0:
                 self.pca_reg += -error*1.1
 
-            cov = cov + self.pca_reg*np.eye(cov.shape[0])
+            cov = cov + self.pca_reg*torch.eye(cov.shape[0],dtype=torch.float64)
 
-            D, U = np.linalg.eigh(cov)
-            self.eigvals = np.zeros(self.k)
+            D, U = torch.linalg.eigh(cov)
+            D, U = D.float().to(self.base_device), U.float().to(self.base_device)
+
+            self.eigvals = torch.zeros(self.k)
             self.eigvals[1:] = 2/self.beta[1:]*(1-D)
-            self.rotation = U@np.diag(D**(-1/2))
-            self.indices = np.argsort(self.eigvals)
+            self.rotation = U@torch.diag(D**(-1/2))
+            self.indices = torch.argsort(self.eigvals)
             self.eigvals = self.eigvals[self.indices]
 
     def predict(self,x):
@@ -151,18 +150,17 @@ class NeuralSolver(BaseSolver):
         Evaluate learned eigenfunction at points x.
 
         Args:
-            x (ndarray or tensor)[n,d]: points at which to evaluate
+            x (tensor)[n,d]: points at which to evaluate
         Returns:
-            fx (ndarray)[n,m]: learned eigenfunctions evaluated at points x.
+            fx (tensor)[n,m]: learned eigenfunctions evaluated at points x.
         """
         with torch.no_grad():
             if self.rotation is None:
                 self.compute_eigfuncs()
 
-            x = torch.tensor(x,device = self.device, dtype=torch.float32)
-            outputs = self.model(x)
+            x = x.to(self.model_device)
+            outputs = self.model(x).to(self.base_device)
 
-            outputs = np.array(outputs.to('cpu'),dtype=np.float64)
             outputs[:, 1:] = outputs[:, 1:]@self.rotation
 
             return outputs[:, self.indices]
@@ -172,33 +170,26 @@ class NeuralSolver(BaseSolver):
         Evaluate gradient of learned eigenfunction at points x.
 
         Args:
-            x (ndarray)[n,d]: points at which to evaluate
+            x (tensor)[n,d]: points at which to evaluate
         Returns:
-            grad_fx (ndarray)[n,m,d]: gradient of learned eigenfunctions evaluated at points x.
+            grad_fx (tensor)[n,m,d]: gradient of learned eigenfunctions evaluated at points x.
         """
         # TODO Check this implementation
+        with torch.no_grad():
+            x = x.to(self.model_device)
 
-        x = torch.tensor(x, device = self.device, dtype = torch.float32)
-        # x = x.requires_grad_()
-        # grad_outputs = torch.eye(self.k,device=self.device)[:,None,:].expand([self.k,x.shape[0],self.k])
-        
-        # outputs = self.model(x)
-        # grad_outputs = torch.autograd.grad(outputs = outputs, inputs = x, grad_outputs = grad_outputs, is_grads_batched=True, create_graph = False)[0].transpose(0,1)
-        
-        def func(x):
-            return self.model(x)
+            def func(x):
+                return self.model(x)
 
-        grad = torch.torch.func.jacrev(func)
-        batch_grad = torch.func.vmap(grad)
+            grad = torch.torch.func.jacrev(func)
+            batch_grad = torch.func.vmap(grad)
 
-        grad_outputs = batch_grad(x)
+            # (n,m,d)
+            grad_outputs = batch_grad(x).to(self.base_device)
 
-        grad_outputs = grad_outputs.detach().cpu().numpy()
+            grad_outputs[:,1:,:] = (grad_outputs[:,1:,:].transpose(1,2) @ self.rotation).transpose(1,2)
 
-        #grad_outputs[:,1:,:] = np.einsum('nmd, mm -> nmd', grad_outputs[:,1:,:], self.rotation)
-        grad_outputs[:,1:,:] = np.transpose(np.transpose(grad_outputs[:,1:,:],(0,2,1)) @ self.rotation, (0,2,1))
-
-        return grad_outputs[:,self.indices,:]
+            return grad_outputs[:,self.indices,:]
     
     def predict_laplacian(self, x):
         """
@@ -216,13 +207,12 @@ class NeuralSolver(BaseSolver):
         laplacian = torch.vmap(lambda x: torch.diagonal(hessian(x),dim1=1,dim2=2).sum(dim=1))
         
         with torch.no_grad():
-            x = torch.tensor(x,device = self.device, dtype=torch.float32)
-            laplacian_outputs =  laplacian(x)
+            x = x.to(self.model_device)
+            laplacian_outputs =  laplacian(x).to(self.base_device)
 
-        laplacian_outputs = np.array(laplacian_outputs.to('cpu'),dtype=np.float64)
-        laplacian_outputs[:,1:] = laplacian_outputs[:,1:]@self.rotation
-        
-        return laplacian_outputs[:, self.indices]
+            laplacian_outputs[:,1:] = laplacian_outputs[:,1:]@self.rotation
+            
+            return laplacian_outputs[:, self.indices]
     
     def predict_Lf(self, x):
         """
@@ -236,7 +226,7 @@ class NeuralSolver(BaseSolver):
 
         energy_grad = self.energy.grad(x)
 
-        Lfx = -self.predict_laplacian(x) + np.matmul(self.predict_grad(x), energy_grad[:,:,None]).squeeze(2)
+        Lfx = -self.predict_laplacian(x) + torch.bmm(self.predict_grad(x), energy_grad.unsqueeze(2)).squeeze(2)
 
         return Lfx
     
@@ -248,5 +238,5 @@ class NeuralSolver(BaseSolver):
         self.fx = self.predict(x)
         self.Lfx = self.predict_Lf(x)
 
-        self.fitted_eigvals = np.sum(self.fx*self.Lfx,axis=0)/np.sum(self.fx**2,axis=0)
+        self.fitted_eigvals = torch.sum(self.fx*self.Lfx,dim=0)/torch.sum(self.fx**2,dim=0)
         return self.fitted_eigvals

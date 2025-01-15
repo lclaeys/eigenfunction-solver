@@ -1,4 +1,3 @@
-import numpy as np
 import torch
 import matplotlib.pyplot as plt
 
@@ -25,9 +24,9 @@ class ExactPDEEvaluator():
 
         k = len(inner_prods)
 
-        self.exact_sol = np.sum(inner_prods[:,None,None] *
-                    np.exp(-self.energy.exact_eigvals(k)[:,None,None]*t[None,None,:]) * 
-                    (self.energy.exact_eigfunctions(x,k).T)[:,:,None],axis=0)
+        self.exact_sol = torch.sum(inner_prods[:,None,None] *
+                    torch.exp(-self.energy.exact_eigvals(k)[:,None,None]*t[None,None,:]) * 
+                    (self.energy.exact_eigfunctions(x,k).T)[:,:,None],dim=0)
 
         def func(x_batch):
             return inner_prods@(self.energy.exact_eigfunctions(x_batch,k)).T
@@ -35,5 +34,5 @@ class ExactPDEEvaluator():
         fitted_k = len(self.pde_solver.solver.fitted_eigvals)
         approx_sol = self.pde_solver.solve(func, t, x, fitted_k)
 
-        return np.mean((approx_sol - self.exact_sol[None,:,:])**2,axis=1) / np.mean(self.exact_sol**2,axis=0)[None,:]
+        return torch.mean((approx_sol - self.exact_sol[None,:,:])**2,dim=1) / torch.mean(self.exact_sol**2,dim=0)[None,:]
 
