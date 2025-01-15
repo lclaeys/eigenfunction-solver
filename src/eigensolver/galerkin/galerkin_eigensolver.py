@@ -1,10 +1,10 @@
 import numpy as np
-import importlib
+import torch
 from src.eigensolver.base_eigensolver import BaseSolver
 from numpy.linalg import LinAlgError
+from torch.utils.data import RandomSampler, DataLoader
 from scipy.linalg import eigh
 
-# TODO: general idea behind this solver
 class GalerkinSolver(BaseSolver):
     """
     Galerkin solver from Cabannes et al. 2024
@@ -13,9 +13,10 @@ class GalerkinSolver(BaseSolver):
         """
         Args:
             energy (BaseEnergy): energy function
-            samples (ndarray): samples
+            samples (tensor): samples
             params (dict): parameters for solver
                 num_samples (int): number of samples to use when estimatating expectations wrt mu
+                batch_size (int): number of samples to load at a time when estimating expectations
                 verbose (bool): whether to print outputs
         """
         super().__init__(energy, *args, **kwargs)
@@ -23,8 +24,14 @@ class GalerkinSolver(BaseSolver):
         self.verbose = params.get('verbose',False)
 
         # TODO: good choice for samples for energies where sampler is unavailable
-        self.samples = samples
         self.num_samples = params.get('num_samples',10000)
+        self.batch_size = params.get('batch_size', 10000)
+
+        if self.num_samples // self.batch_size != 0:
+            raise AssertionError(f"Number of samples ({self.num_samples}) should be multiple of batch size ({self.batch_size})")
+
+        random_sampler = RandomSampler(samples, num_samples=self.num_samples)
+        self.dataloader = DataLoader(samples, batch_size = self.batch_size, sampler = random_sampler)
     
     def fit(self, basis, k = 16, L_reg = 0, phi_reg = 0, seed = 42):
         """
@@ -37,40 +44,43 @@ class GalerkinSolver(BaseSolver):
             phi_reg (float): regularizer for phi
             seed (int): random seed
         """
-        self.rng = np.random.default_rng(seed)
+        torch.manual_seed(seed)
         
-        L = self.compute_L(basis)
-        phi0 = self.compute_phi(basis)
+        L = self.compute_L(basis).double()
+        phi0 = self.compute_phi(basis).double()
 
-        error = eigh(L + L_reg, eigvals_only=True, subset_by_index=[0, 0])[0]
+        error = torch.linalg.eigvalsh(L + L_reg*torch.eye(L.size(0)))[0]
         if error < 0:
             L_reg += -error*10
-        
-        error = eigh(phi0 + phi_reg, eigvals_only=True, subset_by_index=[0, 0])[0]
+            if self.verbose:
+                print(f'Warning: L not positive definite, adding regularizer {phi_reg:.3e}')
+
+        error = torch.linalg.eigvalsh(phi0 + phi_reg*torch.eye(phi0.size(0)))[0]
         if error < 0:
             phi_reg += -error*1.1
             if self.verbose:
                 print(f'Warning: phi not positive definite, adding regularizer {phi_reg:.3e}')
 
-        L = L + L_reg*np.eye(L.shape[0])
-        phi = phi0 + phi_reg*np.eye(phi0.shape[0])
+        L = L + L_reg*torch.eye(L.size(0))
+        phi = phi0 + phi_reg*torch.eye(phi0.size(0))
 
         try:
+            # Use scipy for generalized eigenvalue problem
+            L, phi = L.numpy(), phi.numpy()
             eigvals, eigvecs = eigh(L, phi, subset_by_index=[0, k-1])
+            eigvals, eigvecs = torch.tensor(eigvals), torch.tensor(eigvecs)
+        
         except LinAlgError as e:
             if self.verbose:
                 print('Error solving GEVD')
             return None
-  
+    
+        # (k,)
         self.eigvals = eigvals
+
+        # (p, k)
         self.eigvecs = eigvecs
         self.basis = basis
-
-        # if self.normalize:
-        #     phi = self.compute_phi(basis)
-        #     eigvecs_norm = np.diag(self.eigvecs.T@phi@self.eigvecs)
-        #     print(eigvecs_norm)
-        #     self.eigvecs = self.eigvecs/eigvecs_norm[None,:]
 
         return self
     
@@ -79,9 +89,9 @@ class GalerkinSolver(BaseSolver):
         Evaluate learned eigenfunction at points x.
 
         Args:
-            x (ndarray)[n,d]: points at which to evaluate
+            x (tensor)[n,d]: points at which to evaluate
         Returns:
-            fx (ndarray)[n,m]: learned eigenfunctions evaluated at points x.
+            fx (tensor)[n,k]: learned eigenfunctions evaluated at points x.
         """
         fx = self.basis(x)@self.eigvecs
 
@@ -92,13 +102,14 @@ class GalerkinSolver(BaseSolver):
         Evaluate gradient of learned eigenfunction at points x.
 
         Args:
-            x (ndarray)[n,d]: points at which to evaluate
+            x (tensor)[n,d]: points at which to evaluate
         Returns:
-            grad_fx (ndarray)[n,m,d]: gradient of learned eigenfunctions evaluated at points x.
+            grad_fx (tensor)[n,k,d]: gradient of learned eigenfunctions evaluated at points x.
         """
+        # (n, p, d)
         grad_basis = self.basis.grad(x)
 
-        grad_fx = np.transpose((np.transpose(grad_basis,axes=[0,2,1])@self.eigvecs),axes=[0,2,1])
+        grad_fx = (grad_basis.transpose(1,2) @ self.eigvecs).transpose(1,2)
         
         return grad_fx
     
@@ -107,13 +118,13 @@ class GalerkinSolver(BaseSolver):
         Evaluate laplacian of learned eigenfunction at points x.
 
         Args:
-            x (ndarray)[n,d]: points at which to evaluate
+            x (tensor)[n,d]: points at which to evaluate
         Returns:
-            delta_fx (ndarray)[n,m]: laplacian of learned eigenfunctions evaluated at points x.
+            delta_fx (tensor)[n,m]: laplacian of learned eigenfunctions evaluated at points x.
         """
         delta_basis = self.basis.laplacian(x)
 
-        delta_fx = delta_basis@self.eigvecs
+        delta_fx = delta_basis @ self.eigvecs
 
         return delta_fx
     
@@ -122,14 +133,14 @@ class GalerkinSolver(BaseSolver):
         Evaluate Lf of learned eigenfunction at points x.
 
         Args:
-            x (ndarray)[n,d]: points at which to evaluate
+            x (tensor)[n,d]: points at which to evaluate
         Returns:
-            Lfx (ndarray)[n,m]: Lf evaluated at points x.
+            Lfx (tensor)[n,m]: Lf evaluated at points x.
         """
 
         energy_grad = self.energy.grad(x)
 
-        Lfx = -self.predict_laplacian(x) + np.matmul(self.predict_grad(x), energy_grad[:,:,None]).squeeze(2)
+        Lfx = -self.predict_laplacian(x) + torch.bmm(self.predict_grad(x), energy_grad.unsqueeze(2)).squeeze(2)
 
         return Lfx
     
@@ -137,14 +148,14 @@ class GalerkinSolver(BaseSolver):
         """
         fit eigvals using OLS
         Args:
-            x (ndarray): points to use for fitting
+            x (tensor): points to use for fitting
         Returns:
-            fitted_eigvals (ndarray): k fitted eigvals 
+            fitted_eigvals (tensor): k fitted eigvals 
         """
         self.fx = self.predict(x)
         self.Lfx = self.predict_Lf(x)
 
-        self.fitted_eigvals = np.sum(self.fx*self.Lfx,axis=0)/np.sum(self.fx**2,axis=0)
+        self.fitted_eigvals = torch.sum(self.fx*self.Lfx,dim=0)/torch.sum(self.fx**2,dim=0)
         return self.fitted_eigvals
 
     def compute_L(self, basis):
@@ -154,32 +165,20 @@ class GalerkinSolver(BaseSolver):
         Args:
             basis (Basis): basis functions
         Returns:
-            L (ndarray)[p,p]: matrix L
+            L (tensor)[p,p]: matrix L
         """
-        x = self.rng.choice(self.samples, size = self.num_samples, axis=0)
-
-        # (n, p)
-        #delta_basis = basis.laplacian(x)
-
-        # (n, p, d)
-        grad_basis = basis.grad(x)
-
-        # (n, d)
-        energy_grad = self.energy.grad(x)
-
-        # (n, p)
-        #energy_dotprod = np.matmul(grad_basis, energy_grad[:,:,None]).squeeze(2)
-
-        """
-        # (n, p, p)
-        G = basis(x)[:,:,None]*(-delta_basis[:,None,:] + energy_dotprod[:,None,:])
-
-        H = 1/2*G + 1/2*G.transpose(1,2)
         
-        L = np.sum(H,axis=0)/x.shape[0]
-        """
+        L = torch.zeros((basis.basis_dim,basis.basis_dim))
 
-        L = np.matmul(grad_basis, np.transpose(grad_basis,axes=[0,2,1])).sum(axis=0)/x.shape[0]
+        for batch in self.dataloader:
+            
+            # (batch, p, d)
+            grad_basis = basis.grad(batch)
+
+            L += torch.bmm(grad_basis, grad_basis.transpose(1,2)).sum(axis=0)/batch.size(0)
+        
+        L /= len(self.dataloader)
+
         return L
     
     def compute_phi(self, basis):
@@ -189,15 +188,19 @@ class GalerkinSolver(BaseSolver):
         Args:
             basis (Basis): basis functions
         Returns:
-            phi (ndarray)[p,p]: matrix Phi
+            phi (tensor)[p,p]: matrix Phi
         """
-        x = self.rng.choice(self.samples, size = self.num_samples, axis=0)
-
-        x_basis = basis(x)
-
-        # (p, p)
-        phi = np.sum(x_basis[:,:,None]*x_basis[:,None,:],axis=0)/x.shape[0]
+        phi = torch.zeros((basis.basis_dim,basis.basis_dim))
         
+        for batch in self.dataloader:
+            
+            # (batch, p)
+            batch_basis = basis(batch)
+
+            phi += torch.sum(batch_basis[:,:,None]*batch_basis[:,None,:],dim=0)/batch.size(0)
+        
+        phi /= len(self.dataloader)
+
         return phi
         
         
