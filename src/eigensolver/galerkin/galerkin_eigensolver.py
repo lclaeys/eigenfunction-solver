@@ -27,12 +27,12 @@ class GalerkinSolver(BaseSolver):
         self.num_samples = params.get('num_samples',10000)
         self.batch_size = params.get('batch_size', 10000)
 
-        if self.num_samples // self.batch_size != 0:
+        if self.num_samples % self.batch_size != 0:
             raise AssertionError(f"Number of samples ({self.num_samples}) should be multiple of batch size ({self.batch_size})")
 
         random_sampler = RandomSampler(samples, num_samples=self.num_samples)
         self.dataloader = DataLoader(samples, batch_size = self.batch_size, sampler = random_sampler)
-    
+
     def fit(self, basis, k = 16, L_reg = 0, phi_reg = 0, seed = 42):
         """
         Fit the eigenfunctions.
@@ -46,8 +46,8 @@ class GalerkinSolver(BaseSolver):
         """
         torch.manual_seed(seed)
         
-        L = self.compute_L(basis).double()
-        phi0 = self.compute_phi(basis).double()
+        L = self.compute_L(basis)
+        phi0 = self.compute_phi(basis)
 
         error = torch.linalg.eigvalsh(L + L_reg*torch.eye(L.size(0)))[0]
         if error < 0:
@@ -61,14 +61,14 @@ class GalerkinSolver(BaseSolver):
             if self.verbose:
                 print(f'Warning: phi not positive definite, adding regularizer {phi_reg:.3e}')
 
-        L = L + L_reg*torch.eye(L.size(0))
-        phi = phi0 + phi_reg*torch.eye(phi0.size(0))
+        L = L + L_reg*torch.eye(L.size(0),dtype = torch.float64)
+        phi = phi0 + phi_reg*torch.eye(phi0.size(0),dtype = torch.float64)
 
         try:
             # Use scipy for generalized eigenvalue problem
             L, phi = L.numpy(), phi.numpy()
             eigvals, eigvecs = eigh(L, phi, subset_by_index=[0, k-1])
-            eigvals, eigvecs = torch.tensor(eigvals), torch.tensor(eigvecs)
+            eigvals, eigvecs = torch.tensor(eigvals, dtype = torch.float32), torch.tensor(eigvecs, dtype = torch.float32)
         
         except LinAlgError as e:
             if self.verbose:
@@ -166,16 +166,16 @@ class GalerkinSolver(BaseSolver):
             basis (Basis): basis functions
         Returns:
             L (tensor)[p,p]: matrix L
-        """
-        
-        L = torch.zeros((basis.basis_dim,basis.basis_dim))
+        """        
+        L = torch.zeros((basis.basis_dim,basis.basis_dim), dtype = torch.float64)
 
         for batch in self.dataloader:
             
             # (batch, p, d)
+            batch = batch.double()
             grad_basis = basis.grad(batch)
 
-            L += torch.bmm(grad_basis, grad_basis.transpose(1,2)).sum(axis=0)/batch.size(0)
+            L += (torch.bmm(grad_basis, grad_basis.transpose(1,2)).sum(dim=0)/batch.size(0))
         
         L /= len(self.dataloader)
 
@@ -189,15 +189,16 @@ class GalerkinSolver(BaseSolver):
             basis (Basis): basis functions
         Returns:
             phi (tensor)[p,p]: matrix Phi
-        """
-        phi = torch.zeros((basis.basis_dim,basis.basis_dim))
+        """ 
+        phi = torch.zeros((basis.basis_dim,basis.basis_dim), dtype = torch.float64)
         
         for batch in self.dataloader:
             
             # (batch, p)
+            batch = batch.double()
             batch_basis = basis(batch)
 
-            phi += torch.sum(batch_basis[:,:,None]*batch_basis[:,None,:],dim=0)/batch.size(0)
+            phi += (torch.sum(batch_basis[:,:,None]*batch_basis[:,None,:],dim=0)/batch.size(0))
         
         phi /= len(self.dataloader)
 

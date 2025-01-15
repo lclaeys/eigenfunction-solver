@@ -1,5 +1,5 @@
-import numpy as np
 from src.eigensolver.galerkin.kernels.base_kernel import BaseKernel
+import torch
 
 class PolynomialKernel(BaseKernel):
     """
@@ -51,10 +51,6 @@ class PolynomialKernel(BaseKernel):
             Returns:
                 delta_k_xy (ndarray)[n,p]: delta_k_xy(i,j) = div(grad(k_{y_j}))(x_i)
         """
-        y_norm = np.linalg.norm(y,axis=1)
+        y_norm = torch.linalg.norm(y,dim=1)
         delta_k_xy = self.order*(self.order-1)/self.scale**4*(self.constant + x@y.T/self.scale**2)**(self.order-2)*y_norm[None,:]
         return delta_k_xy
-
-def create_instance(params):
-    kernel = PolynomialKernel(params)
-    return kernel

@@ -1,5 +1,6 @@
-import numpy as np
+import torch 
 import matplotlib.pyplot as plt
+import numpy as np
 
 class EigenEvaluator():
     """
@@ -9,7 +10,6 @@ class EigenEvaluator():
     def __init__(self, energy):
         self.energy = energy
         self.exact_eigfuncs = None
-        self.rng = np.random.default_rng(42)
 
     def evaluate_metrics(self, solver, x, metrics = None, k = 1):
         """
@@ -17,7 +17,7 @@ class EigenEvaluator():
 
         Args:
             solver (BaseSolver): fitted solver object
-            x (ndarray)[N,d]: points used for evaluation (for example, computing MSE between fitted and true eigenfunction)
+            x (tensor)[N,d]: points used for evaluation (for example, computing MSE between fitted and true eigenfunction)
             metrics (array): array of metrics to evaluate
             k (int): evaluate up to k-th eigenfunction/eigenvalue
         Returns:
@@ -26,9 +26,7 @@ class EigenEvaluator():
         out = {}
         fx = None
         Lfx = None
-        grad_fx = None
         fitted_eigvals = None
-        samples = solver.samples
 
         for metric in metrics:
             if metric == "eigen_error":
@@ -39,8 +37,8 @@ class EigenEvaluator():
                     fx = solver.predict(x)[:,:k]
                 if Lfx is None:
                     Lfx = solver.predict_Lf(x)[:,:k]
-                errs = np.mean((solver.eigvals[:k]*fx-Lfx)**2,axis=0)
-                out[metric] = np.cumsum(errs)/np.arange(1,k+1)
+                errs = torch.mean((solver.eigvals[:k]*fx-Lfx)**2,dim=0)
+                out[metric] = torch.cumsum(errs,0)/torch.arange(1,k+1)
 
             if metric == "fitted_eigen_error":
                 """
@@ -52,8 +50,8 @@ class EigenEvaluator():
                     fx = solver.predict(x)[:,:k]
                 if Lfx is None:
                     Lfx = solver.predict_Lf(x)[:,:k]
-                errs = np.mean((fitted_eigvals[:k]*fx-Lfx)**2,axis=0)
-                out[metric] = np.cumsum(errs)/np.arange(1,k+1)
+                errs = torch.mean((fitted_eigvals[:k]*fx-Lfx)**2,dim=0)
+                out[metric] = torch.cumsum(errs,0)/torch.arange(1,k+1)
 
 
             if metric == "orth_error":
@@ -63,28 +61,28 @@ class EigenEvaluator():
                 if fx is None:
                     fx = solver.predict(x)[:,:k]
                 cov = fx.T@fx/x.shape[0]
-                cov_err = cov - np.eye(cov.shape[0])
-                errs = np.array([np.mean(cov_err[:i,:i]**2) for i in range(1,k+1)])
+                cov_err = cov - torch.eye(cov.shape[0])
+                errs = torch.tensor([torch.mean(cov_err[:i,:i]**2) for i in range(1,k+1)])
                 out[metric] = errs
 
-            if metric == "eigen_cost":
-                """
-                sum_i^k <grad f_i , grad f_i >
-                """                
-                if grad_fx is None:
-                    x_mu = self.rng.choice(samples,solver.num_samples,axis=0)
-                    grad_fx = solver.predict_grad(x_mu)[:,:k,:]
+            # if metric == "eigen_cost":
+            #     """
+            #     sum_i^k <grad f_i , grad f_i >
+            #     """                
+            #     if grad_fx is None:
+            #         x_mu = self.rng.choice(samples,solver.num_samples,axis=0)
+            #         grad_fx = solver.predict_grad(x_mu)[:,:k,:]
                 
-                costs = np.diag(np.mean(np.matmul(grad_fx,np.transpose(grad_fx,axes=[0,2,1])),axis=0))
-                out[metric] = np.cumsum(costs)
+            #     costs = np.diag(np.mean(np.matmul(grad_fx,np.transpose(grad_fx,axes=[0,2,1])),axis=0))
+            #     out[metric] = np.cumsum(costs)
 
             if metric == "eigenvalue_mse":
                 """
                 MSE of eigenvalues
                 """
                 eigvals = self.energy.exact_eigvals(k)
-                errs = (eigvals[:k]-np.array(solver.eigvals)[:k])**2
-                out[metric] = np.cumsum(errs)/np.arange(1,k+1)
+                errs = (eigvals[:k]-solver.eigvals[:k])**2
+                out[metric] = torch.cumsum(errs,0)/torch.arange(1,k+1)
 
             if metric == "fitted_eigenvalue_mse":
                 """
@@ -93,7 +91,7 @@ class EigenEvaluator():
                 if fitted_eigvals is None:
                     fitted_eigvals = solver.fit_eigvals(x)
                 errs = (eigvals[:k]-fitted_eigvals[:k])**2
-                out[metric] = np.cumsum(errs)/np.arange(1,k+1)
+                out[metric] = torch.cumsum(errs,0)/torch.arange(1,k+1)
 
             if metric == "eigenfunc_mse":
                 """
@@ -107,8 +105,8 @@ class EigenEvaluator():
                 if self.exact_eigfuncs is None:
                     self.exact_eigfuncs =  self.energy.exact_eigfunctions(x, k)
                 eigfuncs = self.exact_eigfuncs
-                errs = np.zeros(k)
-                rotated_fx = np.zeros_like(fx)
+                errs = torch.zeros(k)
+                rotated_fx = torch.zeros_like(fx)
                 while i < k:
                     cur_eigval = eigvals[i]
                     e = 1
@@ -124,7 +122,7 @@ class EigenEvaluator():
 
                     R = self.solve_procrustes(Fhat, F)
                     rotated_Fhat = Fhat@R
-                    err = np.mean((rotated_Fhat - F)**2,axis=0)
+                    err = torch.mean((rotated_Fhat - F)**2,dim=0)
                     
                     errs[i:i+j] = err
                     rotated_fx[:,i:i+j] = rotated_Fhat
@@ -132,7 +130,7 @@ class EigenEvaluator():
                     i = i + j
 
                 self.rotated_fx = rotated_fx
-                out[metric] = np.cumsum(errs)/np.arange(1,k+1)
+                out[metric] = torch.cumsum(errs,0)/torch.arange(1,k+1)
                 
         return out
     
@@ -144,7 +142,7 @@ class EigenEvaluator():
         
         Args:
             solver (BaseSolver): fitted solver object
-            x (ndarray): points
+            x (tensor): points
             k (int): number of eigfuncs to plot
             plot_exact (bool): plot exact eigenfunctions (should be supported by energy)
             plot_Lf (bool): plot Lf/lambda of fitted eigenfunctions (should be supported by solver)
@@ -153,9 +151,11 @@ class EigenEvaluator():
             fig, ax: figure objects
         """
 
+        quantiles = torch.tensor([0.05,0.95])
+
         if solver.dim == 1:
-            tmin, tmax = np.quantile(x, [0.05,0.95])
-            t = np.linspace(tmin, tmax,1000)[:,None]
+            tmin, tmax = torch.quantile(x[:,0], quantiles, 0)
+            t = torch.linspace(tmin, tmax,1000)[:,None]
             
             fx = solver.predict(t)[:,:k]
             
@@ -165,10 +165,10 @@ class EigenEvaluator():
             i = 0
             
 
-            rotated_fx = np.zeros_like(fx)
+            rotated_fx = torch.zeros_like(fx)
             
             if plot_Lf:
-                rotated_Lfx = np.zeros_like(Lfx)
+                rotated_Lfx = torch.zeros_like(Lfx)
                 fitted_eigvals = solver.fit_eigvals(x)
 
             # rotate eigenfunctions to match exact solution
@@ -221,28 +221,28 @@ class EigenEvaluator():
             return fig, ax
         
         elif solver.dim == 2:
-            tmin, tmax = np.quantile(x[:,0], [0.05,0.95])
-            tx = np.linspace(tmin, tmax,100)[:,None]
-            tmin, tmax = np.quantile(x[:,1], [0.05,0.95])
-            ty = np.linspace(tmin, tmax,100)[:,None]
+            tmin, tmax = torch.quantile(x[:,0], quantiles, 0)
+            tx = torch.linspace(tmin, tmax,100)
+            tmin, tmax = torch.quantile(x[:,1], quantiles, 0)
+            ty = torch.linspace(tmin, tmax,100)
 
-            tx, ty = np.meshgrid(tx, ty)
+            tx, ty = torch.meshgrid(tx, ty)
             # Reshape the grid into an Nx2 array for the function
-            grid = np.stack([tx.ravel(), ty.ravel()], axis=-1)
+            grid = torch.stack([tx.ravel(), ty.ravel()], axis=-1)
 
             fx = solver.predict(grid)[:,:k]
 
             if plot_Lf:
                 Lfx = solver.predict_Lf(grid)[:,:k]
                 fitted_eigvals = solver.fit_eigvals(x)
-                rotated_Lfx = np.zeros_like(Lfx)
+                rotated_Lfx = torch.zeros_like(Lfx)
 
             if plot_exact:
                 eigvals = self.energy.exact_eigvals(k)
                 eigfuncs =  self.energy.exact_eigfunctions(grid, k)
                 i = 0
 
-                rotated_fx = np.zeros_like(fx)
+                rotated_fx = torch.zeros_like(fx)
                 
                 while i < k:
                     cur_eigval = eigvals[i]
@@ -319,12 +319,12 @@ class EigenEvaluator():
 
         Parameters
         ----------
-        A : ndarray of shape (n, d)
-        B : ndarray of shape (n, d)
+        A : tensor of shape (n, d)
+        B : tensor of shape (n, d)
 
         Returns
         -------
-        R : ndarray of shape (d, d)
+        R : tensor of shape (d, d)
             Orthogonal matrix (R^T R = I) that best maps A onto B.
             i.e.  A @ R ≈ B.
         """
@@ -332,7 +332,7 @@ class EigenEvaluator():
         M = A.T @ B  # shape (d, d)
 
         # SVD of M
-        U, S, Vt = np.linalg.svd(M, full_matrices=False)
+        U, S, Vt = torch.linalg.svd(M, full_matrices=False)
 
         # Orthogonal matrix that aligns A to B
         R = U @ Vt

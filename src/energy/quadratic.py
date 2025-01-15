@@ -110,7 +110,7 @@ class QuadraticEnergy(BaseEnergy):
 
             fx[:,i] *= hermite_evals
         
-        fx = torch.tensor(fx)
+        fx = torch.tensor(fx,dtype = x.dtype, device = x.device)
         return fx
 
     def _compute_indices(self, m):
