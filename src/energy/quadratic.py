@@ -1,4 +1,5 @@
 import numpy as np
+import torch as torch
 import heapq
 from itertools import combinations
 
@@ -15,28 +16,30 @@ class QuadraticEnergy(BaseEnergy):
     def __init__(self, A, *args, **kwargs):
         """
         Args:
-            A (ndarray): Positive semi-definite matrix (d, d)
+            A (tensor): Positive semi-definite matrix (d, d)
         """
         super().__init__(*args, **kwargs)
-        if not np.all(np.linalg.eigvals(A) >= 0):
+        if not torch.all(torch.linalg.eigvalsh(A) >= 0):
             raise ValueError("Matrix A is not positive semi-definite")
         self.A = A
-        self.inv_A = np.linalg.inv(self.A)
-        self.dim = self.A.shape[0]
+        self.dim = self.A.size(0)
         self.compute_indices = 0
-        self.diag_A = np.diag(A)
+        self.diag_A = torch.diag(A)
+        self.distribution = torch.distributions.multivariate_normal.MultivariateNormal(
+            torch.zeros(self.dim), precision_matrix = self.A
+        )
 
     def forward(self, x):
         """
         Evaluate the energy at the given points.
 
         Args:
-            x (ndarray)[N, d]: points to evaluate at
+            x (tensor)[N, d]: points to evaluate at
         Returns:
-            energy (ndarray)[N]: energy evaluated at points
+            energy (tensor)[N]: energy evaluated at points
         """
-        # Energy E(x) = 0.5 * x^T A x
-        energy = 0.5 * np.sum(x @ self.A * x, axis=-1)
+        log_prob = self.distribution.log_prob(x)
+        energy = -log_prob
         return energy
     
     def grad(self, x):
@@ -44,9 +47,9 @@ class QuadraticEnergy(BaseEnergy):
         Evaluate the gradient of energy at the given points.
 
         Args:
-            x (ndarray)[N, d]: points to evaluate
+            x (tensor)[N, d]: points to evaluate
         Returns:
-            grad_x (ndarray)[N, d]: gradient of energy evaluated at points
+            grad_x (tensor)[N, d]: gradient of energy evaluated at points
         """
         # Gradient of 0.5 * x^T A x is A x
         grad_x = x @ self.A
@@ -59,10 +62,10 @@ class QuadraticEnergy(BaseEnergy):
         Args:
             n (tuple): shape of sample
         Returns:
-            sample (ndarray)[n, d]: samples
+            sample (tensor)[n, d]: samples
         """
         # Sample from a multivariate normal distribution with mean 0 and covariance matrix inv(A)
-        sample = np.random.multivariate_normal(np.zeros(self.dim), self.inv_A, size = n)
+        sample = self.distribution.rsample(n)
         return sample
     
     def exact_eigvals(self, m):
@@ -73,7 +76,7 @@ class QuadraticEnergy(BaseEnergy):
         Args:
             m (Int)
         Returns:
-            eigvals (ndarray)
+            eigvals (tensor)
         """
         if self.compute_indices != m:
             self._compute_indices(m)
@@ -84,11 +87,11 @@ class QuadraticEnergy(BaseEnergy):
         """
         Evaluate first m exact eigenfunctions at points x, assuming A is diagonal
         Args:
-            x (ndarray)[n,d]: evaluation points
+            x (tensor)[n,d]: evaluation points
         Returns:
-            fx (ndarray)[n,m]: first m eigenfunction evaluations
+            fx (tensor)[n,m]: first m eigenfunction evaluations
         """
-        if not np.allclose(self.A, np.diag(np.diag(self.A))):
+        if not torch.allclose(self.A, torch.diag(torch.diag(self.A))):
             raise ValueError("Matrix A is not diagonal")
 
         if self.compute_indices != m:
@@ -96,31 +99,34 @@ class QuadraticEnergy(BaseEnergy):
 
         fx = np.ones([x.shape[0],m])
         for i in range(m):
-            hermite_evals = eval_hermitenorm(self.indices[i],x*np.sqrt(self.diag_A)[None,:])
+            # numpy
+            hermite_evals = eval_hermitenorm(self.indices[i],(x*torch.sqrt(self.diag_A)[None,:]).numpy())
             norms = np.sqrt(factorial(self.indices[i]))
 
             hermite_evals /= norms
 
             if len(hermite_evals.shape) != 1:
                 hermite_evals = np.prod(hermite_evals,axis=1)
+
             fx[:,i] *= hermite_evals
         
+        fx = torch.tensor(fx)
         return fx
 
     def _compute_indices(self, m):
         if self.compute_indices == m:
             return self.indices
         
-        self.eigvals, self.indices = self.smallest_combinations(np.diag(self.A), m)
+        self.eigvals, self.indices = self.smallest_combinations(torch.diag(self.A), m)
 
     @staticmethod
     def smallest_combinations(x, m):
         """
         Args:
-            x (ndarray)[d]: input array of eigenvalues of A
+            x (tensor)[d]: input array of eigenvalues of A
             m (int) 
         Returns:
-            vals (ndarray)[m]: smallest linear combinations of eigenvalues
+            vals (tensor)[m]: smallest linear combinations of eigenvalues
             vecs (ndarray)[m,d]: indices of those combinations
         """
         n = len(x)
@@ -151,7 +157,7 @@ class QuadraticEnergy(BaseEnergy):
                     heapq.heappush(heap, (new_S, new_a_vector))
                     visited.add(tuple(new_a_vector))
         
-        return np.array(vals), np.array(vecs)
+        return torch.tensor(vals), np.array(vecs)
 
 
 
