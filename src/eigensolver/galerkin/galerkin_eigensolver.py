@@ -25,7 +25,7 @@ class GalerkinSolver(BaseSolver):
 
         # TODO: good choice for samples for energies where sampler is unavailable
         self.num_samples = params.get('num_samples',10000)
-        self.batch_size = params.get('batch_size', 10000)
+        self.batch_size = min(params.get('batch_size', 10000), self.num_samples)
 
         if self.num_samples % self.batch_size != 0:
             raise AssertionError(f"Number of samples ({self.num_samples}) should be multiple of batch size ({self.batch_size})")
@@ -57,7 +57,7 @@ class GalerkinSolver(BaseSolver):
 
         error = torch.linalg.eigvalsh(phi0 + phi_reg*torch.eye(phi0.size(0)))[0]
         if error < 0:
-            phi_reg += -error*1.1
+            phi_reg += -error*2
             if self.verbose:
                 print(f'Warning: phi not positive definite, adding regularizer {phi_reg:.3e}')
 

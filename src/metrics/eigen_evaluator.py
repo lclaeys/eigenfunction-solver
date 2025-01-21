@@ -27,6 +27,7 @@ class EigenEvaluator():
         fx = None
         Lfx = None
         fitted_eigvals = None
+        exact_eigfuncs = None
 
         for metric in metrics:
             if metric == "eigen_error":
@@ -90,6 +91,7 @@ class EigenEvaluator():
                 """
                 if fitted_eigvals is None:
                     fitted_eigvals = solver.fit_eigvals(x)
+                eigvals = self.energy.exact_eigvals(k)
                 errs = (eigvals[:k]-fitted_eigvals[:k])**2
                 out[metric] = torch.cumsum(errs,0)/torch.arange(1,k+1)
 
@@ -102,9 +104,9 @@ class EigenEvaluator():
                     fx = solver.predict(x)[:,:k]
                 i = 0
                 eigvals = self.energy.exact_eigvals(k)
-                if self.exact_eigfuncs is None:
-                    self.exact_eigfuncs =  self.energy.exact_eigfunctions(x, k)
-                eigfuncs = self.exact_eigfuncs
+                if exact_eigfuncs is None:
+                    exact_eigfuncs =  self.energy.exact_eigfunctions(x, k)
+                eigfuncs = exact_eigfuncs
                 errs = torch.zeros(k)
                 rotated_fx = torch.zeros_like(fx)
                 while i < k:

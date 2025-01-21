@@ -42,6 +42,32 @@ class GaussianMixture(BaseEnergy):
         energy = -log_prob
         return energy
 
+    # def grad(self, x):
+    #     """
+    #     Compute the gradient of the energy at the given points.
+
+    #     Args:
+    #         x (Tensor)[N, d]: points to evaluate at
+    #     Returns:
+    #         grad (Tensor)[N, d]: gradient of the energy at points
+    #     """
+    #     x.requires_grad_(True)
+    #     energy = self.forward(x)
+
+    #     # Here is how backward works. Let us vectorize input x and output y=f(x)
+    #     # Then, taking gradient of y w.r.t. x gives us Jacobian matrix J_f
+    #     # J_f[i,j] = d y_i / d x_j
+    #     # The backward operation in pytorch returns a value of v^T J_f, where v has to be specified in a non-scalar case
+    #     # Note that if x is a batch (ie input rows are evaluated independently), 
+    #     # then putting v = (1,1,..., 1) gives us the desired result, after reshaping v^T J_f to the shape of x
+    #     # If it is not independent, then in general we can not do that, and we would need to restore whole Jacobian by multiple queries.
+    #     # Note that it is also similar to applying backward to (1, 1, ..., 1)^T y
+
+    #     energy.backward(gradient=torch.ones_like(energy),retain_graph=True) 
+    #     grad = x.grad.detach()
+
+    #     return grad
+    
     def grad(self, x):
         """
         Compute the gradient of the energy at the given points.
@@ -51,20 +77,18 @@ class GaussianMixture(BaseEnergy):
         Returns:
             grad (Tensor)[N, d]: gradient of the energy at points
         """
-        x.requires_grad_(True)
+        if not x.requires_grad:
+            x.requires_grad_(True)
+        
         energy = self.forward(x)
-
-        # Here is how backward works. Let us vectorize input x and output y=f(x)
-        # Then, taking gradient of y w.r.t. x gives us Jacobian matrix J_f
-        # J_f[i,j] = d y_i / d x_j
-        # The backward operation in pytorch returns a value of v^T J_f, where v has to be specified in a non-scalar case
-        # Note that if x is a batch (ie input rows are evaluated independently), 
-        # then putting v = (1,1,..., 1) gives us the desired result, after reshaping v^T J_f to the shape of x
-        # If it is not independent, then in general we can not do that, and we would need to restore whole Jacobian by multiple queries.
-        # Note that it is also similar to applying backward to (1, 1, ..., 1)^T y
-
-        energy.backward(gradient=torch.ones_like(energy)) 
-        grad = x.grad
+        
+        # Use autograd.grad for explicit gradient computation
+        grad = torch.autograd.grad(
+            outputs=energy,
+            inputs=x,
+            grad_outputs=torch.ones_like(energy),
+        )[0]
+        
         return grad
 
     def exact_sample(self, num_samples):
@@ -72,9 +96,9 @@ class GaussianMixture(BaseEnergy):
         Sample from the Gaussian mixture distribution.
 
         Args:
-            num_samples (int): number of samples to generate
+            num_samples (tuple): shape of samples to generate
         Returns:
             samples (Tensor)[num_samples, d]: generated samples
         """
-        samples = self.mixture.sample((num_samples,))
+        samples = self.mixture.sample(num_samples)
         return samples
