@@ -110,7 +110,7 @@ class LangevinSampler():
         save_steps = steps // save_every
         fsamples = torch.zeros(1+len(funcs))
 
-        with open(csv_file, mode='a', newline='') as file:
+        with open(csv_file, mode='w', newline='') as file:
             writer = csv.writer(file)
 
             writer.writerow(['time'] + func_names)
