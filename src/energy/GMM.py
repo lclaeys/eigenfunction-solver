@@ -51,7 +51,8 @@ class GaussianMixture(BaseEnergy):
         Returns:
             grad (Tensor)[N, d]: gradient of the energy at points
         """
-        x.requires_grad_(True)
+        if not x.requires_grad:
+            x.requires_grad_(True)
         energy = self.forward(x)
 
         # Here is how backward works. Let us vectorize input x and output y=f(x)
@@ -63,18 +64,43 @@ class GaussianMixture(BaseEnergy):
         # If it is not independent, then in general we can not do that, and we would need to restore whole Jacobian by multiple queries.
         # Note that it is also similar to applying backward to (1, 1, ..., 1)^T y
 
-        energy.backward(gradient=torch.ones_like(energy)) 
-        grad = x.grad
+        energy.backward(gradient=torch.ones_like(energy),retain_graph=True) 
+        grad = x.grad.detach()
+        x.requires_grad_(False)
+
         return grad
+    
+    # def grad(self, x):
+    #     """
+    #     Compute the gradient of the energy at the given points.
+
+    #     Args:
+    #         x (Tensor)[N, d]: points to evaluate at
+    #     Returns:
+    #         grad (Tensor)[N, d]: gradient of the energy at points
+    #     """
+    #     if not x.requires_grad:
+    #         x.requires_grad_(True)
+        
+    #     energy = self.forward(x)
+        
+    #     # Use autograd.grad for explicit gradient computation
+    #     grad = torch.autograd.grad(
+    #         outputs=energy,
+    #         inputs=x,
+    #         grad_outputs=torch.ones_like(energy),
+    #     )[0]
+        
+    #     return grad
 
     def exact_sample(self, num_samples):
         """
         Sample from the Gaussian mixture distribution.
 
         Args:
-            num_samples (int): number of samples to generate
+            num_samples (tuple): shape of samples to generate
         Returns:
             samples (Tensor)[num_samples, d]: generated samples
         """
-        samples = self.mixture.sample((num_samples,))
+        samples = self.mixture.sample(num_samples)
         return samples

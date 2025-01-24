@@ -24,34 +24,33 @@ from src.metrics.reconstruction_evaluator import ReconstructionEvaluator
 
 from src.pdesolver.fitted_solver import FittedEigenSolver
 
-ps = [100,200,300]
-kernel_scales = np.logspace(-0.5,3,20)
+ps = np.arange(400,600,25)
+kernel_scales = [20.0]
 
-dim = 2
-k = 15
+dim = 20
+k = 300
 
-hyperparam_names = ['dim', 'k', 'p', 'scale', 'L_reg','num_samples']
-int_hyperparams = ['dim', 'k', 'p', 'num_samples']
+hyperparam_names = ['dim', 'k', 'p', 'scale', 'L_reg','num_samples','batch_size']
+int_hyperparams = ['dim', 'k', 'p', 'num_samples','batch_size']
 hyperparams = [
     [dim],
     [k],
     ps,
     kernel_scales,
     [1e-6],
-    2**np.arange(7,16)
+    2**np.arange(7,19),
+    [2**15]
 ]
 
 hyperparam_array = np.array(list(product(*hyperparams)))
 
-experiment_name = f'gaussian_2d'
-np.random.seed(42)
+experiment_name = f'galerkin_20d'
 
-A = np.eye(dim)
+A = torch.eye(dim)
 
 # standard metrics
 metrics = ['eigen_error',
            'orth_error',
-           'eigen_cost', 
            'fitted_eigen_error',
            'eigenvalue_mse', 
            'fitted_eigenvalue_mse',
@@ -68,9 +67,9 @@ funcs = {
 linear_mult = dim
 quadratic_mult = ((dim+1)*dim)//2
 pdes = {
-    'linear': np.array([0] + [1]),
-    'quadratic': np.array([0] * (linear_mult + 1) + [1]),
-    "cubic": np.array([0]*(quadratic_mult + linear_mult + 1)+[1])
+    'linear': torch.tensor([0] + [1],dtype=torch.float32),
+    'quadratic': torch.tensor([0] * (linear_mult + 1) + [1],dtype=torch.float32),
+    "cubic": torch.tensor([0]*(quadratic_mult + linear_mult + 1)+[1],dtype=torch.float32)
 }
 
 print(pdes)
@@ -108,8 +107,8 @@ def kernel_experiment(hyperparams_array, energy, kernel_class = PolynomialKernel
 
 for seed in range(100):
     print(f'Starting experiment with seed {seed:04}...')
-    np.random.seed(seed)
-    x = energy.exact_sample((2**17,))
+    torch.manual_seed(seed)
+    x = energy.exact_sample((2**21,))
     x_eval = energy.exact_sample((2**14,))
 
     metric_results = np.zeros((len(hyperparam_array),len(metrics),k))
@@ -138,7 +137,7 @@ for seed in range(100):
             pde_evaluator = ExactPDEEvaluator(energy, fitted_solver)
 
             for j, pde in enumerate(pdes):
-                pde_results[i,j,:] = pde_evaluator.compute_pde_error(pdes[pde], x_eval, np.array([1]))[:,0]
+                pde_results[i,j,:] = pde_evaluator.compute_pde_error(pdes[pde], x_eval, torch.tensor([1]))[:,0]
 
     dfs = []
     for i in range(k):
