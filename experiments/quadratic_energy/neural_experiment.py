@@ -25,7 +25,7 @@ from src.metrics.pde_evaluator import ExactPDEEvaluator
 from src.metrics.reconstruction_evaluator import ReconstructionEvaluator
 from torch.optim.lr_scheduler import LambdaLR
 
-dim = 2
+dim = 20
 
 metrics = ['eigenvalue_mse','eigenfunc_mse','orth_error']
 
@@ -129,12 +129,12 @@ def train():
 
     run.finish()
 
-k = 10
+k = 250
 
 sweep_config = {
     "method": "bayes",
-    "name": "overnight_sweep_tanh_2d_cubic",
-    "metric": {"name": "cubic_pde_error", "goal": "minimize"},
+    "name": "overnight_sweep_tanh_20d",
+    "metric": {"name": "fitted_eigenvalue_mse", "goal": "minimize"},
     "parameters": {
         "dim": {"value": dim},
         "k": {"value": k},
