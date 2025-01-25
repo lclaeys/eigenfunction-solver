@@ -19,12 +19,19 @@ class QuadraticEnergy(BaseEnergy):
             A (tensor): Positive semi-definite matrix (d, d)
         """
         super().__init__(*args, **kwargs)
+
+        if not torch.allclose(A, A.T):
+            raise ValueError("Matrix A is not symmetric.")
+        
         if not torch.all(torch.linalg.eigvalsh(A) >= 0):
             raise ValueError("Matrix A is not positive semi-definite")
+        
         self.A = A
         self.dim = self.A.size(0)
         self.compute_indices = 0
-        self.diag_A = torch.diag(A)
+        
+        self.D, self.U = torch.linalg.eigh(A)
+
         self.distribution = torch.distributions.multivariate_normal.MultivariateNormal(
             torch.zeros(self.dim), precision_matrix = self.A
         )
@@ -83,42 +90,118 @@ class QuadraticEnergy(BaseEnergy):
 
         return self.eigvals
 
-    def exact_eigfunctions(self, x, m):
+    def exact_eigfunctions(self, x, m, use_scipy = True):
         """
-        Evaluate first m exact eigenfunctions at points x, assuming A is diagonal
+        Evaluate first m exact eigenfunctions at points x
         Args:
             x (tensor)[n,d]: evaluation points
+            m (int): number of eigenfunctions to compute
+            use_scipy (bool): whether to use scipy for evaluating hermite polynomials (not differentiable)
         Returns:
             fx (tensor)[n,m]: first m eigenfunction evaluations
         """
-        if not torch.allclose(self.A, torch.diag(torch.diag(self.A))):
-            raise ValueError("Matrix A is not diagonal")
-
+        if x.requires_grad:
+            use_scipy = False
+        
         if self.compute_indices != m:
             self._compute_indices(m)
 
-        fx = np.ones([x.shape[0],m])
-        for i in range(m):
-            # numpy
-            hermite_evals = eval_hermitenorm(self.indices[i],(x*torch.sqrt(self.diag_A)[None,:]).numpy())
-            norms = np.sqrt(factorial(self.indices[i]))
+        reshaped_x = (x @ self.U) * torch.sqrt(self.D)[None,:]
 
-            hermite_evals /= norms
+        if use_scipy:
+            fx = np.ones([x.shape[0],m])
+            for i in range(m):
+                # numpy
+                hermite_evals = eval_hermitenorm(self.indices[i],reshaped_x.numpy())
+                norms = np.sqrt(factorial(self.indices[i]))
 
-            if len(hermite_evals.shape) != 1:
-                hermite_evals = np.prod(hermite_evals,axis=1)
+                hermite_evals /= norms
 
-            fx[:,i] *= hermite_evals
+                if len(hermite_evals.shape) != 1:
+                    hermite_evals = np.prod(hermite_evals,axis=1)
+
+                fx[:,i] *= hermite_evals
         
-        fx = torch.tensor(fx,dtype = x.dtype, device = x.device)
+            fx = torch.tensor(fx,dtype = x.dtype, device = x.device)
+
+        else:
+            fx = torch.ones([x.shape[0],m], dtype = x.dtype, device = x.device)
+            for i in range(m):
+                # pytorch
+                n = torch.tensor(self.indices[i], device = x.device)
+                hermite_evals = self.eval_hermitenorm(n,reshaped_x)
+                norms = torch.sqrt(torch.tensor(factorial(self.indices[i]), dtype = x.dtype, device = x.device))
+
+                hermite_evals /= norms
+
+                if len(hermite_evals.shape) != 1:
+                    hermite_evals = torch.prod(hermite_evals,dim=1)
+
+                fx[:,i] *= hermite_evals
+            
         return fx
 
     def _compute_indices(self, m):
         if self.compute_indices == m:
             return self.indices
         
-        self.eigvals, self.indices = self.smallest_combinations(torch.diag(self.A), m)
+        self.eigvals, self.indices = self.smallest_combinations(self.D, m)
 
+    def generate_probabilist_hermite_coeffs(self, m, dtype):
+        """
+        Generate the coefficients of the first m probabilist Hermite polynomials.
+        
+        Args:
+            m (int): Number of Hermite polynomials to generate (non-negative integer).
+            dtype
+        Returns:
+            torch.Tensor: A 2D tensor of shape (m, m), where each row contains the 
+                        coefficients of the corresponding Hermite polynomial, 
+                        padded with zeros for alignment.
+        """
+        # Initialize a tensor to store coefficients
+        coeffs = torch.zeros((m, m), dtype=dtype)
+        
+        # H_0(x) = 1
+        if m > 0:
+            coeffs[0, 0] = 1.0
+        
+        # H_1(x) = x
+        if m > 1:
+            coeffs[1, 1] = 1.0
+        
+        # Use the recurrence relation to compute higher-order coefficients
+        for n in range(2, m):
+            # H_n(x) = x * H_{n-1}(x) - (n-1) * H_{n-2}(x)
+            coeffs[n, 1:] += coeffs[n-1, :-1]  # x * H_{n-1}(x)
+            coeffs[n, :] -= (n - 1) * coeffs[n-2, :]  # - (n-1) * H_{n-2}(x)
+        
+        return coeffs
+
+    def eval_hermitenorm(self, n, x):
+        """
+        Implementation of scipy's eval_hermitenorm in a differentiable way.
+        Args:
+            n (tensor)[d]: degree of polynomial to evaluate at each dimension
+            x (tensor)[N,d]: points to evaluate
+        Returns:
+            He (tensor)[N,d]: values of He polynomial
+        """
+        m = n.max() + 1
+
+        coeff_matrix = self.generate_probabilist_hermite_coeffs(m, dtype = x.dtype)
+
+        # (d,m)
+        coeffs = coeff_matrix[n]
+        
+        x_powers = torch.cumprod(x.repeat(m-1,1,1),0)
+
+        # shape (m, N, d)
+        full_x_powers = torch.ones((m,) + x.shape)
+        full_x_powers[1:] = x_powers
+
+        return torch.einsum('ijk, ki -> jk', full_x_powers, coeffs)
+    
     @staticmethod
     def smallest_combinations(x, m):
         """
