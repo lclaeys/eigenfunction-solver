@@ -21,9 +21,9 @@ class ExactEigenSolver():
             func (Function): initial condition
             t (array)[T]: times at which to evaluate
             x (array)[n,d]: points where to evaluate
-            k (int): number of eigenfunctions to use in the approximation
+            k (int): maximum number of eigenfunctions to use in the approximation
         Returns:
-            sol (array)[n,T]: approximate solution of PDE at points x and times t
+            sol (array)[k,n,T]: approximate solution of PDE at points x and times t
         """
 
         self.eigvals = self.energy.exact_eigvals(k)
@@ -39,7 +39,7 @@ class ExactEigenSolver():
         inner_prods = torch.mean(self.sample_fx*self.sample_funcx[:,None],dim=0)
         
         # sum over first index of (k,n,T)
-        sol = torch.sum(inner_prods[:,None,None] * 
+        sol = torch.cumsum(inner_prods[:,None,None] * 
                      torch.exp(-self.eigvals[:,None,None]*t[None,None,:]) * 
                      (self.fx.T)[:,:,None],
                      dim = 0)
