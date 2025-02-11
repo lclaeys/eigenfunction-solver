@@ -9,7 +9,7 @@ class GalerkinSolver(BaseSolver):
     """
     Galerkin solver from Cabannes et al. 2024
     """
-    def __init__(self, energy, samples, params, *args, **kwargs):
+    def __init__(self, energy, samples, params, Rfunc = None, *args, **kwargs):
         """
         Args:
             energy (BaseEnergy): energy function
@@ -18,19 +18,24 @@ class GalerkinSolver(BaseSolver):
                 num_samples (int): number of samples to use when estimatating expectations wrt mu
                 batch_size (int): number of samples to load at a time when estimating expectations
                 verbose (bool): whether to print outputs
+            Rfunc (function): source term. Expects batched input
         """
         super().__init__(energy, *args, **kwargs)
         self.dim = energy.dim
         self.verbose = params.get('verbose',False)
+        self.dtype = samples.dtype
 
         # TODO: good choice for samples for energies where sampler is unavailable
         self.num_samples = params.get('num_samples',10000)
         self.batch_size = min(params.get('batch_size', 10000), self.num_samples)
+        
+        self.energy = energy
+        self.Rfunc = Rfunc
 
         if self.num_samples % self.batch_size != 0:
             raise AssertionError(f"Number of samples ({self.num_samples}) should be multiple of batch size ({self.batch_size})")
 
-        random_sampler = RandomSampler(samples, num_samples=self.num_samples)
+        random_sampler = RandomSampler(samples, num_samples = self.num_samples)
         self.dataloader = DataLoader(samples, batch_size = self.batch_size, sampler = random_sampler)
 
     def fit(self, basis, k = 16, L_reg = 0, phi_reg = 0, seed = 42):
@@ -68,8 +73,8 @@ class GalerkinSolver(BaseSolver):
             # Use scipy for generalized eigenvalue problem
             L, phi = L.numpy(), phi.numpy()
             eigvals, eigvecs = eigh(L, phi, subset_by_index=[0, k-1])
-            eigvals, eigvecs = torch.tensor(eigvals, dtype = torch.float32), torch.tensor(eigvecs, dtype = torch.float32)
-        
+            eigvals, eigvecs = torch.tensor(eigvals, dtype = self.dtype), torch.tensor(eigvecs, dtype = self.dtype)
+            
         except LinAlgError as e:
             if self.verbose:
                 print('Error solving GEVD')
@@ -93,7 +98,7 @@ class GalerkinSolver(BaseSolver):
         Returns:
             fx (tensor)[n,k]: learned eigenfunctions evaluated at points x.
         """
-        fx = self.basis(x)@self.eigvecs
+        fx = self.basis(x) @ self.eigvecs
 
         return fx
     
@@ -141,6 +146,10 @@ class GalerkinSolver(BaseSolver):
         energy_grad = self.energy.grad(x)
 
         Lfx = -self.predict_laplacian(x) + torch.bmm(self.predict_grad(x), energy_grad.unsqueeze(2)).squeeze(2)
+        
+        if self.Rfunc is not None:
+            Rx = self.Rfunc(x)
+            Lfx += Rx[:,None] * self.predict(x)
 
         return Lfx
     
@@ -175,8 +184,14 @@ class GalerkinSolver(BaseSolver):
             batch = batch.double()
             grad_basis = basis.grad(batch)
 
-            L += (torch.bmm(grad_basis, grad_basis.transpose(1,2)).sum(dim=0)/batch.size(0))
-        
+            L += self.energy.inner_prod(batch, grad_basis, grad_basis)
+
+            if self.Rfunc is not None:
+                batch_basis = basis(batch)
+                Rbatch = self.Rfunc(batch)
+
+                L += self.energy.inner_prod(batch, batch_basis, Rbatch[:,None] * batch_basis)
+
         L /= len(self.dataloader)
 
         return L
@@ -198,7 +213,7 @@ class GalerkinSolver(BaseSolver):
             batch = batch.double()
             batch_basis = basis(batch)
 
-            phi += (torch.sum(batch_basis[:,:,None]*batch_basis[:,None,:],dim=0)/batch.size(0))
+            phi += self.energy.inner_prod(batch, batch_basis, batch_basis)
         
         phi /= len(self.dataloader)
 

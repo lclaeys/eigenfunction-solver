@@ -1,6 +1,8 @@
+import torch
+
 class KernelBasis():
     """
-    Basis from taking a kernel with some basis points.
+    Kernel Basis
     """
     def __init__(self, kernel, basis_points):
         self.kernel = kernel
