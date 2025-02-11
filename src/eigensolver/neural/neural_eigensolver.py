@@ -20,6 +20,7 @@ class NeuralSolver(BaseSolver):
             optimizer (torch.optim.Optimizer): optimizer for training the model
             scheduler (optional): scheduler for training
             params (dict): additional solver parameters:
+                use_orth_loss (bool): whether to add orthogonalization loss
                 device (torch.device): device on which to train the model
                 verbose (bool): whether to print additional output
                 beta (float): regularization parameter. Loss is beta*var_loss + orth_loss
@@ -30,6 +31,7 @@ class NeuralSolver(BaseSolver):
         """
         super().__init__(energy, *args, **kwargs)
         
+        self.use_orth_loss = params.get('use_orth_loss', True)
         self.model_device = params.get('model_device','cuda')
         self.base_device = 'cpu'
         self.verbose = params.get('verbose',False)
@@ -66,7 +68,6 @@ class NeuralSolver(BaseSolver):
         self.rotation = None
         self.laplacian = None
         
-
     # TODO: maybe add .fit() method ?
 
     def _compute_loss(self, model, x):
@@ -87,7 +88,9 @@ class NeuralSolver(BaseSolver):
         grad_fx = torch.autograd.grad(outputs = fx, inputs = x, grad_outputs = grad_outputs, is_grads_batched=True, create_graph=True)[0].transpose(0,1)
         
         loss_1 = self.var_loss(grad_fx)  # Variational loss
-        loss_2 = self.orth_loss(fx)      # Orthogonal loss
+        loss_2 = 0.0
+        if self.use_orth_loss:
+            loss_2 = self.orth_loss(fx)      # Orthogonal loss
 
         return loss_1 + loss_2
         
@@ -98,7 +101,6 @@ class NeuralSolver(BaseSolver):
         Returns:
             loss (tensor on cpu)
         """
-
         for batch_idx, batch in enumerate(self.dataloader):
             batch = batch.to(self.model_device)
             batch = batch.requires_grad_()
@@ -123,12 +125,12 @@ class NeuralSolver(BaseSolver):
         """
         with torch.no_grad():
             x_pca = self.samples[:self.num_samples].to(self.model_device)
-            fx_pca = self.model(x_pca)[:,1:].to('cpu')
+            fx_pca = self.model(x_pca).to('cpu')
 
             # higher precision for eigh
             fx_pca = fx_pca.double()
             
-            cov = torch.sum(fx_pca[:,:,None]*fx_pca[:,None,:],dim=0)/fx_pca.size(0)
+            cov = self.energy.inner_prod(x_pca,fx_pca,fx_pca)
             
             error = torch.linalg.eigvalsh(cov)[0]
             if error < 0:
@@ -139,8 +141,7 @@ class NeuralSolver(BaseSolver):
             D, U = torch.linalg.eigh(cov)
             D, U = D.float().to(self.base_device), U.float().to(self.base_device)
 
-            self.eigvals = torch.zeros(self.k)
-            self.eigvals[1:] = 2/self.beta[1:]*(1-D)
+            self.eigvals = 2/self.beta*(1-D)
             self.rotation = U@torch.diag(D**(-1/2))
             self.indices = torch.argsort(self.eigvals)
             self.eigvals = self.eigvals[self.indices]
@@ -155,15 +156,17 @@ class NeuralSolver(BaseSolver):
             fx (tensor)[n,m]: learned eigenfunctions evaluated at points x.
         """
         with torch.no_grad():
-            if self.rotation is None:
-                self.compute_eigfuncs()
-
             x = x.to(self.model_device)
             outputs = self.model(x).to(self.base_device)
 
-            outputs[:, 1:] = outputs[:, 1:]@self.rotation
+            if self.rotation is not None and self.use_orth_loss:
+                self.compute_eigfuncs()
+                outputs = outputs @ self.rotation
 
-            return outputs[:, self.indices]
+                return outputs[:, self.indices]
+            
+            else:
+                return outputs
     
     def predict_grad(self, x):
         """
@@ -187,7 +190,7 @@ class NeuralSolver(BaseSolver):
             # (n,m,d)
             grad_outputs = batch_grad(x).to(self.base_device)
 
-            grad_outputs[:,1:,:] = (grad_outputs[:,1:,:].transpose(1,2) @ self.rotation).transpose(1,2)
+            grad_outputs = (grad_outputs.transpose(1,2) @ self.rotation).transpose(1,2)
 
             return grad_outputs[:,self.indices,:]
     
@@ -210,7 +213,7 @@ class NeuralSolver(BaseSolver):
             x = x.to(self.model_device)
             laplacian_outputs =  laplacian(x).to(self.base_device)
 
-            laplacian_outputs[:,1:] = laplacian_outputs[:,1:]@self.rotation
+            laplacian_outputs = laplacian_outputs @ self.rotation
             
             return laplacian_outputs[:, self.indices]
     

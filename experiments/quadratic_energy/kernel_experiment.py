@@ -24,11 +24,11 @@ from src.metrics.reconstruction_evaluator import ReconstructionEvaluator
 
 from src.pdesolver.fitted_solver import FittedEigenSolver
 
-ps = np.arange(400,600,25)
-kernel_scales = [20.0]
+ps = [400]
+kernel_scales = torch.logspace(0,10,20)
 
-dim = 20
-k = 300
+dim = 2
+k = 10
 
 hyperparam_names = ['dim', 'k', 'p', 'scale', 'L_reg','num_samples','batch_size']
 int_hyperparams = ['dim', 'k', 'p', 'num_samples','batch_size']
@@ -44,9 +44,9 @@ hyperparams = [
 
 hyperparam_array = np.array(list(product(*hyperparams)))
 
-experiment_name = f'galerkin_20d'
+experiment_name = f'galerkin_2d_corr'
 
-A = torch.eye(dim)
+A = torch.linalg.inv(torch.tensor([[1,0.95],[0.95,2.0]]))
 
 # standard metrics
 metrics = ['eigen_error',
