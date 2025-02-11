@@ -18,13 +18,16 @@ class QuadraticEnergy(BaseEnergy):
         Args:
             A (tensor): Positive semi-definite matrix (d, d)
         """
-        super().__init__(*args, **kwargs)
+        super(QuadraticEnergy, self).__init__(*args, **kwargs)
 
         if not torch.allclose(A, A.T):
             raise ValueError("Matrix A is not symmetric.")
         
+        confine_mult = 1.0
         if not torch.all(torch.linalg.eigvalsh(A) >= 0):
-            raise ValueError("Matrix A is not positive semi-definite")
+            print('Warning: matrix A is not positive definite. Using -A for samples, but some functions may not work as intended.')
+            self.non_confining = True
+            confine_mult = -1.0
         
         self.A = A
         self.dim = self.A.size(0)
@@ -33,7 +36,7 @@ class QuadraticEnergy(BaseEnergy):
         self.D, self.U = torch.linalg.eigh(A)
 
         self.distribution = torch.distributions.multivariate_normal.MultivariateNormal(
-            torch.zeros(self.dim,device=A.device), precision_matrix = self.A
+            torch.zeros(self.dim,device=A.device), precision_matrix = self.A * confine_mult
         )
 
         self.stored_coeff_matrix = torch.ones((1,1),device=A.device)
@@ -48,8 +51,7 @@ class QuadraticEnergy(BaseEnergy):
         Returns:
             energy (tensor)[N]: energy evaluated at points
         """
-        log_prob = self.distribution.log_prob(x)
-        energy = -log_prob
+        energy = 1/2 * torch.einsum("ij, ij -> i", x @ self.A, x)
         return energy
     
     def grad(self, x):

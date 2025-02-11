@@ -19,7 +19,7 @@ class RingEnergy(BaseEnergy):
             scale (float): scale
             radius (float): radius
         """
-        super().__init__(*args, **kwargs)
+        super(RingEnergy, self).__init__(*args, **kwargs)
         self.dim = dim
         self.scale = scale
         self.radius = radius
