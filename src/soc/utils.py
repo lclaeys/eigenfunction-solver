@@ -2,15 +2,107 @@ import torch
 
 from src.energy.quadratic import QuadraticEnergy
 
-def compute_D(A,P,lmbda):
-    assert torch.allclose(A, torch.eye(A.shape[0],device=A.device)*A[0,0])
-    Lambda, U = torch.linalg.eigh(P)
+def langevin_samples(
+        sde,
+        x,
+        t,
+        lmbd,
+):
+    """
+    Generate samples using LD.
+    Returns samples of same shape as x
+    """
+    for t0, t1 in zip(t[:-1], t[1:]):
+        dt = t1-t0
+        noise = torch.randn_like(x).to(x.device)
+        update = sde.b(t0, x) * dt + torch.sqrt(lmbd * dt) * torch.einsum("ij,bj->bi", sde.sigma, noise)
+        x = x + update
 
-    a = torch.diag(A)
-    sign = torch.where(a > 0, 1.0, -1.0)
-    kappa = torch.diag(A) / lmbda * (1 + sign * torch.sqrt(1 + 2 / a**2 * Lambda))
+    return x
 
-    return U @ torch.diag(kappa) @ U.T
+def mala_samples(sde, x, t, lmbd):
+    """
+    Generate samples using MALA (Metropolis Adjusted Langevin Algorithm).
+    Returns samples of the same shape as x.
+    
+    Assumes:
+      - sde.b(t, x) computes the drift at time t and position x.
+      - sde.sigma is a constant diffusion matrix.
+    
+    The proposal is:
+       x_proposal = x + drift(x)*dt + sqrt(lmbd*dt) * (sde.sigma @ noise)
+    and the acceptance probability is computed using the ratio:
+       alpha = min{1, exp( [energy(x) - energy(x_proposal)]
+                        + [log q(x|x_proposal) - log q(x_proposal|x)] ) }.
+    """
+    # Precompute the inverse of sigma (assumed constant) for the proposal density.
+    inv_sigma = torch.inverse(sde.sigma)
+    
+    if sde.confining:
+        energy_sign = 1.0
+    else:
+        energy_sign = -1.0
+    last_energy = sde.energy(x) * 2 / lmbd * energy_sign
+
+    for t0, t1 in zip(t[:-1], t[1:]):
+        dt = t1 - t0
+        
+        # Propose a candidate move using the ULA (Euler–Maruyama) step.
+        noise = torch.randn_like(x, device=x.device)
+        drift_x = sde.b(t0, x) * energy_sign
+        proposal = x + drift_x * dt + torch.sqrt(lmbd * dt) * torch.einsum("ij,bj->bi", sde.sigma, noise)
+        
+        # Compute the drift at the proposal point (using time t1).
+        drift_proposal = sde.b(t1, proposal) * energy_sign
+        
+        # Compute the forward move residual:
+        #   diff_forward = proposal - (x + drift_x*dt)
+        diff_forward = proposal - x - drift_x * dt
+        # And the reverse move residual:
+        #   diff_reverse = x - (proposal + drift_proposal*dt)
+        diff_reverse = x - proposal - drift_proposal * dt
+        
+        # To compute the (log) proposal densities (up to constants), we “whiten” these differences.
+        # Here the proposal distribution is Gaussian with covariance (lmbd*dt)*(sde.sigma @ sde.sigma^T).
+        # Compute the transformed differences:
+        transformed_forward = torch.einsum("ij,bj->bi", inv_sigma, diff_forward)
+        transformed_reverse = torch.einsum("ij,bj->bi", inv_sigma, diff_reverse)
+        
+        # Compute squared Mahalanobis norms.
+        sq_norm_forward = (transformed_forward ** 2).sum(dim=1)
+        sq_norm_reverse = (transformed_reverse ** 2).sum(dim=1)
+        
+        # Log-density (ignoring normalization constants that cancel out)
+        log_q_forward = -0.5 * sq_norm_forward / (lmbd * dt)
+        log_q_reverse = -0.5 * sq_norm_reverse / (lmbd * dt)
+        
+        # Compute the Metropolis log acceptance ratio.
+        # Since energy(x) is the potential (i.e. -log p(x) up to constant), the difference 
+        # energy(x) - energy(proposal) accounts for the target density ratio.
+
+        proposal_energy = sde.energy(proposal) * 2 / lmbd * energy_sign
+
+        log_alpha = (-proposal_energy + last_energy) + (log_q_reverse - log_q_forward)
+        
+        # Clamp log_alpha at 0 before exponentiating so that acceptance probability is ≤ 1.
+        alpha = torch.exp(torch.minimum(log_alpha, torch.zeros_like(log_alpha)))
+        
+        # Decide whether to accept the proposal.
+        # Generate a random number for each sample (assume x is [batch, dims]).
+        accept = (torch.rand(x.shape[0], device=x.device) < alpha)
+        # If accepted, update x to the proposal; otherwise, keep the current x.
+        x = torch.where(accept[:,None], proposal, x)
+        last_energy = torch.where(accept, proposal_energy, last_energy)
+        
+    return x
+
+def compute_D(A,P,lmbd):
+    A = -A * 2 / lmbd
+    P = P * 2 / lmbd**2
+    X = 0.25 * A.T @ A + P
+    Lambda, U = torch.linalg.eigh(X)
+    
+    return -1/2 * A + U @ torch.diag(Lambda.sqrt()) @ U.T
 
 def exact_eigfunctions(x, m, neural_sde, cfg, return_grad = False):
     """

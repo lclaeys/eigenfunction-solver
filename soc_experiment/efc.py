@@ -32,7 +32,7 @@ from omegaconf import OmegaConf
 import yaml
 import time
 
-from src.soc.model import FullyConnectedUNet
+from src.soc.models import FullyConnectedUNet
 from src.soc.settings import get_energy, get_Rfunc
 from src.soc.loss import compute_loss, compute_l2_error
 from src.soc.utils import exact_eigfunctions
