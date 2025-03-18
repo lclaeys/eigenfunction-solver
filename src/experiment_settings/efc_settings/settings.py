@@ -22,11 +22,14 @@ from socmatching.SOC_matching.models import (
 from src.experiment_settings.efc_settings.OU_quadratic import OU_Quadratic
 from src.experiment_settings.efc_settings.OU_linear import OU_Linear
 from src.experiment_settings.efc_settings.double_well import DoubleWell
+from src.experiment_settings.efc_settings.ring import Ring
+
 
 def ground_truth_control(cfg, ts, x0, **kwargs):
     if (
         cfg.method.setting == "OU_quadratic_easy"
         or cfg.method.setting == "OU_quadratic_hard"
+        or cfg.method.setting == "OU_quadratic_stable"
     ):
         R_inverse = torch.matmul(
             kwargs["sigma"], torch.transpose(kwargs["sigma"], 0, 1)
@@ -112,6 +115,7 @@ def define_neural_sde(cfg, ts, x0, **kwargs):
     if (
         cfg.method.setting == "OU_quadratic_easy"
         or cfg.method.setting == "OU_quadratic_hard"
+        or cfg.method.setting == "OU_quadratic_stable"
     ):  
         neural_sde = OU_Quadratic(
             device=cfg.method.device,
@@ -156,6 +160,22 @@ def define_neural_sde(cfg, ts, x0, **kwargs):
             T = cfg.method.T,
             k = cfg.method.k,
         )
+    elif cfg.method.setting == "ring":
+        neural_sde = Ring(
+            device=cfg.method.device,
+            dim=cfg.method.d,
+            hdims=cfg.arch.hdims,
+            prior=cfg.arch.prior,
+            joint=cfg.arch.joint,
+            lmbd=cfg.method.lmbd,
+            radius=kwargs['radius'],
+            scale=kwargs['scale'],
+            P=kwargs["P"],
+            Q=kwargs["Q"],
+            sigma=kwargs["sigma"],
+            T = cfg.method.T,
+            k = cfg.method.k,
+        )
     neural_sde.initialize_models()
     return neural_sde
 
@@ -166,10 +186,11 @@ def rand_spd(cfg, seed):
     rand_A = rand_U @ rand_L @ rand_U.T
     return (rand_A + rand_A.T) / 2
 
-def define_variables(cfg, ts):
+def define_variables(cfg, ts, compute_optimal=True):
     if (
         cfg.method.setting == "OU_quadratic_easy"
         or cfg.method.setting == "OU_quadratic_hard"
+        or cfg.method.setting == "OU_quadratic_stable"
     ):
         if cfg.method.d == 2:
             x0 = torch.tensor([0.4, 0.6]).to(cfg.method.device)
@@ -179,14 +200,17 @@ def define_variables(cfg, ts):
         sigma = torch.eye(cfg.method.d).to(cfg.method.device)
         if cfg.method.setting == "OU_quadratic_hard":
             A = 1.0 * torch.eye(cfg.method.d).to(cfg.method.device)
-            #A = - torch.diag(torch.linspace(0.5,1.5,cfg.method.d)).to(cfg.method.device)
             P = 1.0 * torch.eye(cfg.method.d).to(cfg.method.device)
             Q = 0.5 * torch.eye(cfg.method.d).to(cfg.method.device)
         elif cfg.method.setting == "OU_quadratic_easy":
             A = -0.2 * torch.eye(cfg.method.d).to(cfg.method.device)
             P = 0.2 * torch.eye(cfg.method.d).to(cfg.method.device)
             Q = 0.1 * torch.eye(cfg.method.d).to(cfg.method.device)
-
+        elif cfg.method.setting == "OU_quadratic_stable":
+            A = -1.0 * torch.eye(cfg.method.d).to(cfg.method.device)
+            P = 1.0 * torch.eye(cfg.method.d).to(cfg.method.device)
+            Q = 0.5 * torch.eye(cfg.method.d).to(cfg.method.device)
+         
         optimal_sde = ground_truth_control(cfg, ts, x0, sigma=sigma, A=A, P=P, Q=Q)
         neural_sde = define_neural_sde(
             cfg, ts, x0, sigma=sigma, A=A, P=P, Q=Q
@@ -224,9 +248,29 @@ def define_variables(cfg, ts):
 
         sigma = torch.eye(cfg.method.d).to(cfg.method.device)
 
-        optimal_sde = ground_truth_control(cfg, ts, x0, sigma=sigma, kappa=kappa, nu=nu)
+        optimal_sde = None
+        if compute_optimal:
+            optimal_sde = ground_truth_control(cfg, ts, x0, sigma=sigma, kappa=kappa, nu=nu)
+        
         neural_sde = define_neural_sde(
             cfg, ts, x0, sigma=sigma, kappa=kappa, nu=nu
+        )
+
+        return x0, sigma, optimal_sde, neural_sde
+
+    elif cfg.method.setting=='ring':
+        x0 = torch.zeros(cfg.method.d).to(cfg.method.device)
+        sigma = torch.eye(cfg.method.d).to(cfg.method.device)
+
+        P = torch.ones(cfg.method.d).to(cfg.method.device)
+        Q = 0.5 * torch.eye(cfg.method.d).to(cfg.method.device)
+        scale = 1.0 
+        radius = 5.0
+
+        optimal_sde = None
+
+        neural_sde = define_neural_sde(
+            cfg, ts, x0, sigma=sigma, P=P, Q=Q, scale=scale, radius=radius
         )
 
         return x0, sigma, optimal_sde, neural_sde

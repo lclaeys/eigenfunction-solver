@@ -1,6 +1,8 @@
 import torch
+import numpy as np
 
 from src.energy.quadratic import QuadraticEnergy
+from socmatching.SOC_matching.utils import stochastic_trajectories
 
 def langevin_samples(
         sde,
@@ -95,6 +97,59 @@ def mala_samples(sde, x, t, lmbd):
         last_energy = torch.where(accept, proposal_energy, last_energy)
         
     return x
+
+def log_normalization_constant(
+    sde, x0, ts, cfg, n_batches_normalization=512, ground_truth_control=None
+):
+    log_weights_list = []
+    weights_list = []
+
+    if ground_truth_control is not None:
+        norm_sqd_diff_mean = 0
+    for k in range(n_batches_normalization):
+        (
+            states,
+            _,
+            _,
+            _,
+            log_path_weight_deterministic,
+            log_path_weight_stochastic,
+            log_terminal_weight,
+            controls,
+        ) = stochastic_trajectories(
+            sde,
+            x0,
+            ts.to(x0),
+            cfg.method.lmbd,
+        )
+        log_weights = (
+            log_path_weight_deterministic
+            + log_path_weight_stochastic
+            + log_terminal_weight
+        )
+        log_weights_list.append(log_weights)
+
+        if k % 32 == 31:
+            print(f"Batch {k+1}/{n_batches_normalization} done")
+    
+    log_weights = torch.stack(log_weights_list, dim=1)
+
+    print(
+        f"Average and std. dev. of log_weights for all batches: {torch.mean(log_weights)} {torch.std(log_weights)}"
+    )
+
+    log_normalization_const = torch.logsumexp(torch.logsumexp(log_weights,dim=0),dim=0) - torch.log(torch.tensor([log_weights.shape[0]*log_weights.shape[1]],device=log_weights.device))
+
+    return log_normalization_const
+
+def compute_EMA_log(log_value, log_EMA_value, EMA_coeff=0.01, itr=0):
+    itr_avg = int(np.floor(1 / EMA_coeff))
+    if itr == 0:
+        return log_value
+    elif itr <= itr_avg:
+        return torch.logsumexp(torch.stack((log_value, log_EMA_value + np.log(itr))),dim=0) - np.log(itr + 1)
+    else:
+        return  torch.logsumexp(torch.stack((log_value + np.log(EMA_coeff), np.log(1 - EMA_coeff) + log_EMA_value)),dim=0)
 
 def compute_D(A,P,lmbd):
     A = -A * 2 / lmbd

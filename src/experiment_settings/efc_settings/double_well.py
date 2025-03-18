@@ -34,9 +34,12 @@ class DoubleWell(EigenSDE):
             sigma=sigma,
             T=T,
             k=k,
+            prior=prior,
+            joint=joint
         )
         self.kappa = kappa
         self.nu = nu
+        self.confining=True
     
     # Energy: b = -grad E
     def energy(self, x):
@@ -68,13 +71,27 @@ class DoubleWell(EigenSDE):
     # Running cost
     def f(self, t, x):
         if len(x.shape) == 2:
-            return torch.zeros(x.shape[0]).to(x.device)
+            return torch.sum(
+                self.nu.unsqueeze(0) * (x**2 - 1) ** 2, dim=1
+            )
         elif len(x.shape) == 3:
-            return torch.zeros(x.shape[0], x.shape[1]).to(x.device)
+            return torch.sum(
+                self.nu.unsqueeze(0).unsqueeze(0) * (x**2 - 1) ** 2,
+                dim=2,
+            )
 
     # Gradient of running cost
     def nabla_f(self, t, x):
-        return torch.zeros_like(x).to(x.device)
+        if len(x.shape) == 2:
+            return 2 * self.nu.unsqueeze(0) * (x**2 - 1) * 2 * x
+        elif len(x.shape) == 3:
+            return (
+                2
+                * self.nu.unsqueeze(0).unsqueeze(0)
+                * (x**2 - 1)
+                * 2
+                * x
+            )
 
     # Final cost
     def g(self, x):
@@ -123,8 +140,11 @@ class DoubleWell(EigenSDE):
         return -2 * self.kappa[idx] * (x**2 - 1) * 2 * x
 
     # Running cost
-    def scalar_f(self, t, x, idx):
-        return torch.zeros_like(x).to(x.device)
+    def scalar_f(self, t, x, idx,cpu=False):
+        if cpu:
+            return self.nu.cpu()[idx] * (x**2 - 1) ** 2
+        else:
+            return self.nu[idx] * (x**2 - 1) ** 2
 
     # Final cost
     def scalar_g(self, x, idx, cpu=False):
@@ -133,22 +153,18 @@ class DoubleWell(EigenSDE):
         else:
             return self.nu[idx] * (x**2 - 1) ** 2
 
-    # Optimal control
+    # Optimal control with running cost
     def compute_reference_solution(
         self, T=1.0, delta_t=0.005, delta_x=0.005, xb=2.5, lmbd=1.0, idx=0
     ):
         nx = int(2.0 * xb / delta_x)
-
         beta = 2
-
         xvec = np.linspace(-xb, xb, nx, endpoint=True)
 
-        # A = D^{-1} L D
-        # assumes Neumann boundary conditions
-
+        # Build the finite-difference matrix A for the operator L.
+        # (Assumes Neumann boundary conditions.)
         A = np.zeros([nx, nx])
         for i in range(0, nx):
-
             x = -xb + (i + 0.5) * delta_x
             if i > 0:
                 x0 = -xb + (i - 0.5) * delta_x
@@ -205,6 +221,7 @@ class DoubleWell(EigenSDE):
         A = -A / beta
         N = int(T / delta_t)
 
+        # Diagonal transformation
         sc_potential = self.scalar_potential(xvec, idx, cpu=True)
         D = np.diag(np.exp(beta * sc_potential / 2))
         D_inv = np.diag(np.exp(-beta * sc_potential / 2))
@@ -212,17 +229,25 @@ class DoubleWell(EigenSDE):
         psi = np.zeros([N + 1, nx])
         psi[N, :] = np.exp(-self.scalar_g(xvec, idx, cpu=True))
 
+        # Compute running cost vector.
+        # (If scalar_f were time-dependent, you might recompute this inside the loop.)
+        fvec = np.array(self.scalar_f(0, xvec, idx, cpu=True))
+
+        # Backward Euler time stepping.
         for n in range(N - 1, -1, -1):
+            # The central diagonal of the matrix being inverted is modified to
+            # include the running cost term: subtract beta*f(x).
+            # Note: N/T equals 1/delta_t.
             band = -delta_t * np.vstack(
                 [
                     np.append([0], np.diagonal(A, offset=1)),
-                    np.diagonal(A, offset=0) - N / T,
+                    np.diagonal(A, offset=0) - N / T - fvec / beta,
                     np.append(np.diagonal(A, offset=1), [0]),
                 ]
             )
-
             psi[n, :] = D.dot(solve_banded([1, 1], band, D_inv.dot(psi[n + 1, :])))
-
+        
+        # Recover the optimal control from the spatial gradient of log(psi).
         ut_discrete = np.zeros([N + 1, nx - 1])
         for n in range(N + 1):
             for i in range(nx - 1):
@@ -234,5 +259,5 @@ class DoubleWell(EigenSDE):
                     / delta_x
                 )
 
-        print(f"ut_discrete computed")
+        print("ut_discrete computed")
         return ut_discrete

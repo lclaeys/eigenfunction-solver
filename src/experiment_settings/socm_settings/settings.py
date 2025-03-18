@@ -21,11 +21,14 @@ from SOC_matching.models import (
 from src.experiment_settings.socm_settings.OU_quadratic import OU_Quadratic
 from src.experiment_settings.socm_settings.OU_linear import OU_Linear
 from src.experiment_settings.socm_settings.double_well import DoubleWell
+from src.experiment_settings.socm_settings.ring import Ring
+
     
 def ground_truth_control(cfg, ts, x0, **kwargs):
     if (
         cfg.method.setting == "OU_quadratic_easy"
         or cfg.method.setting == "OU_quadratic_hard"
+        or cfg.method.setting == "OU_quadratic_stable"
     ):
         R_inverse = torch.matmul(
             kwargs["sigma"], torch.transpose(kwargs["sigma"], 0, 1)
@@ -105,11 +108,7 @@ def ground_truth_control(cfg, ts, x0, **kwargs):
 
         return optimal_sde
 
-    elif cfg.method.setting == "multiagent_8":
-        optimal_sde = None
-        return optimal_sde
-
-    elif cfg.method.setting == "molecular_dynamics":
+    else:
         optimal_sde = None
         return optimal_sde
 
@@ -144,6 +143,7 @@ def define_neural_sde(cfg, ts, x0, u_warm_start, **kwargs):
     if (
         cfg.method.setting == "OU_quadratic_easy"
         or cfg.method.setting == "OU_quadratic_hard"
+        or cfg.method.setting == "OU_quadratic_stable"
     ):
         neural_sde = OU_Quadratic(
             device=cfg.method.device,
@@ -192,6 +192,24 @@ def define_neural_sde(cfg, ts, x0, u_warm_start, **kwargs):
             scaling_factor_M=cfg.method.scaling_factor_M,
             T=cfg.method.T,
         )
+    elif cfg.method.setting == "ring":
+        neural_sde = Ring(
+            device=cfg.method.device,
+            dim=cfg.method.d,
+            hdims=cfg.arch.hdims,
+            hdims_M=cfg.arch.hdims_M,
+            lmbd=cfg.method.lmbd,
+            radius=kwargs['radius'],
+            scale=kwargs['scale'],
+            P=kwargs['P'],
+            Q=kwargs['Q'],
+            sigma=kwargs["sigma"],
+            gamma=cfg.method.gamma,
+            scaling_factor_nabla_V=cfg.method.scaling_factor_nabla_V,
+            scaling_factor_M=cfg.method.scaling_factor_M,
+            T=cfg.method.T,
+        )
+        
     neural_sde.initialize_models()
     return neural_sde
 
@@ -202,10 +220,11 @@ def rand_spd(cfg, seed):
     rand_A = rand_U @ rand_L @ rand_U.T
     return (rand_A + rand_A.T) / 2
 
-def define_variables(cfg, ts):
+def define_variables(cfg, ts, compute_optimal = True):
     if (
         cfg.method.setting == "OU_quadratic_easy"
         or cfg.method.setting == "OU_quadratic_hard"
+        or cfg.method.setting == "OU_quadratic_stable"
     ):
         if cfg.method.d == 2:
             x0 = torch.tensor([0.4, 0.6]).to(cfg.method.device)
@@ -221,7 +240,11 @@ def define_variables(cfg, ts):
             A = -0.2 * torch.eye(cfg.method.d).to(cfg.method.device)
             P = 0.2 * torch.eye(cfg.method.d).to(cfg.method.device)
             Q = 0.1 * torch.eye(cfg.method.d).to(cfg.method.device)
-
+        elif cfg.method.setting == "OU_quadratic_stable":
+            A = -1.0 * torch.eye(cfg.method.d).to(cfg.method.device)
+            P = 1.0 * torch.eye(cfg.method.d).to(cfg.method.device)
+            Q = 0.5 * torch.eye(cfg.method.d).to(cfg.method.device)
+        
         optimal_sde = ground_truth_control(cfg, ts, x0, sigma=sigma, A=A, P=P, Q=Q)
         u_warm_start = set_warm_start(cfg, optimal_sde, x0, sigma)
         neural_sde = define_neural_sde(
@@ -260,8 +283,11 @@ def define_variables(cfg, ts):
         nu[2] = nu_i
 
         sigma = torch.eye(cfg.method.d).to(cfg.method.device)
-
-        optimal_sde = ground_truth_control(cfg, ts, x0, sigma=sigma, kappa=kappa, nu=nu)
+        
+        optimal_sde = None
+        if compute_optimal:
+            optimal_sde = ground_truth_control(cfg, ts, x0, sigma=sigma, kappa=kappa, nu=nu)
+        
         u_warm_start = set_warm_start(cfg, optimal_sde, x0, sigma)
         neural_sde = define_neural_sde(
             cfg, ts, x0, u_warm_start, sigma=sigma, kappa=kappa, nu=nu
@@ -269,99 +295,22 @@ def define_variables(cfg, ts):
 
         return x0, sigma, optimal_sde, neural_sde, u_warm_start
 
-    elif cfg.method.setting == "molecular_dynamics":
-        print(f"molecular_dynamics")
-        x0 = -torch.ones(cfg.method.d).to(cfg.method.device)
-
-        kappa = torch.ones(cfg.method.d).to(cfg.method.device)
+    elif cfg.method.setting=='ring':
+        x0 = torch.zeros(cfg.method.d).to(cfg.method.device)
         sigma = torch.eye(cfg.method.d).to(cfg.method.device)
 
-        optimal_sde = ground_truth_control(
-            cfg,
-            ts,
-            x0,
-            sigma=sigma,
-            kappa=kappa,
-        )
+        P = torch.ones(cfg.method.d).to(cfg.method.device)
+        Q = 0.5 * torch.eye(cfg.method.d).to(cfg.method.device)
+        scale = 1.0
+        radius = 5.0
+
+        optimal_sde = None
+
         u_warm_start = set_warm_start(cfg, optimal_sde, x0, sigma)
         neural_sde = define_neural_sde(
-            cfg,
-            ts,
-            x0,
-            u_warm_start,
-            sigma=sigma,
-            kappa=kappa,
+            cfg, ts, x0, u_warm_start, sigma=sigma, P=P, Q=Q, scale=scale, radius=radius
         )
 
         return x0, sigma, optimal_sde, neural_sde, u_warm_start
 
-    elif cfg.method.setting == "multiagent_8":
-        print(f"multiagent_8")
-        x0 = torch.tensor(
-            [
-                -4.0,
-                4.5,
-                -7.0,
-                4.5,
-                -4.0,
-                1.5,
-                -7.0,
-                1.5,
-                -4.0,
-                -1.5,
-                -7.0,
-                -1.5,
-                -4.0,
-                -4.5,
-                -7.0,
-                -4.5,
-            ]
-        ).to(cfg.method.device)
 
-        g_center = torch.tensor(
-            [
-                4.0,
-                4.5,
-                7.0,
-                4.5,
-                4.0,
-                1.5,
-                7.0,
-                1.5,
-                4.0,
-                -1.5,
-                7.0,
-                -1.5,
-                4.0,
-                -4.5,
-                7.0,
-                -4.5,
-            ]
-        ).to(cfg.method.device)
-        g_coeff = 2.00
-        f_coeff = 0.05
-
-        sigma = torch.eye(cfg.method.d).to(cfg.method.device)
-
-        optimal_sde = ground_truth_control(
-            cfg,
-            ts,
-            x0,
-            sigma=sigma,
-            g_center=g_center,
-            g_coeff=g_coeff,
-            f_coeff=f_coeff,
-        )
-        u_warm_start = set_warm_start(cfg, optimal_sde, x0, sigma)
-        neural_sde = define_neural_sde(
-            cfg,
-            ts,
-            x0,
-            u_warm_start,
-            sigma=sigma,
-            g_center=g_center,
-            g_coeff=g_coeff,
-            f_coeff=f_coeff,
-        )
-
-        return x0, sigma, optimal_sde, neural_sde, u_warm_start
