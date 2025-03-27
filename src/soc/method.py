@@ -4,7 +4,7 @@ import numpy as np
 import nvidia_smi
 import functorch
 
-from src.soc.models import FullyConnectedUNet, FullyConnectedUNet2
+from src.soc.models import FullyConnectedUNet, FullyConnectedUNet2,FullyConnectedUNet3, SpectralUNet, RingFullyConnectedUNet, SIREN, GaussianNet
 from src.soc.utils import langevin_samples, mala_samples
 
 from socmatching.SOC_matching import utils, models
@@ -75,7 +75,7 @@ class EigenSDE(NeuralSDE):
     def initialize_models(self):
         init_scale = torch.ones(self.k)
         if self.prior == "positive":
-            init_scale[0] = 1e-2
+            init_scale[0] = 1.0
 
         if self.joint:
             self.eigf_model = FullyConnectedUNet(
@@ -85,11 +85,10 @@ class EigenSDE(NeuralSDE):
             ).to(self.device)
         else:
             self.eigf_models = nn.ModuleList([
-                FullyConnectedUNet(
+                SIREN(
                 dim=self.dim,
                 hdims=self.hdims,
-                k = 1,
-                scaling_factor=init_scale[i]
+                k = 1
                 ).to(self.device) for i in range(self.k)
             ])
             print(len(self.eigf_models))
@@ -117,10 +116,14 @@ class EigenSDE(NeuralSDE):
         else:
             def model_fn(x):
                 outs = [model(x).squeeze(0) for model in self.eigf_models]
+                # if not self.prior == "positive":
+                #     outs[0] = outs[0].abs()
                 out = torch.stack(outs,dim = 0)
                 return out, out
         
-        self.model_jac = torch.vmap(torch.func.jacrev(model_fn,has_aux=True))
+        self.model_jac = torch.vmap(torch.func.jacrev(model_fn,has_aux=True), randomness='different')
+        self.model_hessian = torch.func.hessian(lambda x: model_fn(x)[0])
+        self.model_laplacian = torch.vmap(lambda x: self.model_hessian(x).diagonal(dim1=-1,dim2=-2).sum(dim=-1))
 
     def nabla_V(self, t, x, k = None, reg = 5e-3):
         """
@@ -134,7 +137,7 @@ class EigenSDE(NeuralSDE):
         When training, possibly perform PCA.
         """
         if k is None:
-            k = self.k
+            k = 1
         
         t = t.reshape(-1)
         t_rev = self.T - t
@@ -155,7 +158,7 @@ class EigenSDE(NeuralSDE):
 
             if self.prior == "positive":
                 if k == 1:
-                    return - self.lmbd * (Dfx[:,0,:] + shift)
+                    return - self.lmbd * (-Dfx[:,0,:] + shift)
                 else:
                     fx[:,0] = fx[:,0].exp()
                     Dfx[:,0,:] = Dfx[:,0,:] * fx[:,0,None]
@@ -170,9 +173,9 @@ class EigenSDE(NeuralSDE):
                           * torch.exp(-t_rev[:,None,None] * self.eigvals[None,:k,None] * self.lmbd / 2)
                           * Dfx[:,:k,:], dim = 1)
                         
-            v = torch.sign(v) * (torch.abs(v) + regularizer)
+            v = torch.clamp(v, min=regularizer)
             
-            return -self.lmbd *  (nabla_v / v[:,None] + shift)
+            u = -self.lmbd *  (nabla_v / v[:,None] + shift)
         
         if len(x.shape) == 3:
             x_reshaped = x.reshape(-1,self.dim)
@@ -201,9 +204,14 @@ class EigenSDE(NeuralSDE):
                           * torch.exp(-t_rev[:,None,None,None] * self.eigvals[None,None,:k,None] * self.lmbd / 2)
                           * Dfx[:,:,:k,:], dim = 2)
 
-            v = torch.sign(v) * (torch.abs(v) + regularizer)
+            v = torch.clamp(v, min=regularizer)
             
-            return -self.lmbd * (nabla_v / v[:,:,None] + shift)
+            u = -self.lmbd * (nabla_v / v[:,:,None] + shift)
+        
+        u_norm = u.norm(dim=-1,keepdim=True)
+        u = u * (10.0 / u_norm).clamp(max=1.0)
+
+        return u
         
     def compute_inner_prods(self, 
                             samples):
@@ -267,8 +275,17 @@ class EigenSolver(SOC_Solver):
         self.langevin_sample_steps = langevin_sample_steps
         self.langevin_dt = langevin_dt
         self.f_scaling = torch.ones(neural_sde.k, device=x0.device,requires_grad=False)
-        self.beta = torch.ones(neural_sde.k, device=x0.device,requires_grad=False) * beta
-    
+        self.beta = beta
+        self.shift = 0.0
+        self.eigval_returns = 0.0
+        self.eigval_vol = 0.0
+        self.EMA_coef = 0.5
+        self.itr = 0
+        self.prev_stored_eigval = torch.tensor([1.0], device=x0.device,requires_grad=False)
+        self.stored_eigval = torch.tensor([1.0], device=x0.device,requires_grad=False)
+
+        self.compute_eigen_loss = False
+
     def control(self, t0, x0, k = 1):
         x0 = x0.reshape(-1, self.dim)
         t0_expanded = t0.expand(x0.shape[0])
@@ -282,7 +299,6 @@ class EigenSolver(SOC_Solver):
         self,
         sample_size=65536,
         verbose=False,
-        compute_ab=False,
         update_beta=False
     ):
         if self.samples is None:
@@ -293,6 +309,15 @@ class EigenSolver(SOC_Solver):
             burnin_langevin_ts = torch.linspace(0,self.langevin_dt * self.langevin_burnin_steps, self.langevin_burnin_steps+1).to(self.x0.device)
             self.sample_langevin_ts = torch.linspace(0,self.langevin_dt * self.langevin_sample_steps, self.langevin_sample_steps+1).to(self.x0.device)
             self.samples = mala_samples(self.neural_sde,self.samples,burnin_langevin_ts,self.lmbd)
+
+            shift = self.samples.mean(dim=0)
+            scale = self.samples.std(dim=0)
+
+            print(f'Completed burn-in. Samples mean {shift}, std {scale}')
+            with torch.no_grad():
+                for i in range(self.neural_sde.k):
+                    self.neural_sde.eigf_models[i].shift.copy_(shift)
+                    self.neural_sde.eigf_models[i].scale.copy_(scale)
         
         else:
             self.samples = mala_samples(self.neural_sde,self.samples,self.sample_langevin_ts,self.lmbd)
@@ -310,18 +335,20 @@ class EigenSolver(SOC_Solver):
             sq_grad_norms = torch.mean(grad_norm**2,dim=0)
             
             if self.neural_sde.prior == "positive":
-                sq_grad_norms[0] = torch.logsumexp(2*fx[:,0] + 2*grad_norm[:,0].log(),dim=0).exp() / fx.shape[0]
+                sq_grad_norms[0] = torch.logsumexp(-2*fx[:,0] + 2*grad_norm[:,0].log(),dim=0).exp() / fx.shape[0]
         else:
             grad_Ex = - self.neural_sde.b(None, self.samples) * 2 / self.lmbd
             sq_grad_norms = torch.mean(torch.norm(Dfx + fx[:,:,None]*grad_Ex[:,None,:],dim=2,p=2)**2,dim=0)
 
             if self.neural_sde.prior == "positive":
                 grad_norm = torch.norm(Dfx[:,0,:] + grad_Ex,dim=1,p=2)
-                sq_grad_norms[0] = torch.logsumexp(2*fx[:,0] + 2*grad_norm.log(),dim=0).exp() / fx.shape[0]
+                sq_grad_norms[0] = torch.logsumexp(-2*fx[:,0] + 2*grad_norm.log(),dim=0).exp() / fx.shape[0]
 
         R_norms = torch.mean(fx**2 * Rx[:,None],dim=0)
         if self.neural_sde.prior == "positive":
-            R_norms[0] = torch.logsumexp(2*fx[:,0] + Rx.log(),dim=0).exp() / fx.shape[0]
+            Rx = torch.clip(torch.abs(Rx),min=1e-8) * torch.sign(Rx)
+            R_pos_idx = Rx.squeeze() > 0
+            R_norms[0] = (torch.logsumexp(-2*fx[R_pos_idx,0] + Rx[R_pos_idx].log(),dim=0).exp() - torch.logsumexp(-2*fx[~R_pos_idx,0] + (-Rx[~R_pos_idx]).log(),dim=0).exp()) / fx.shape[0]
 
         if self.neural_sde.joint:
             var_loss = torch.sum(sq_grad_norms + R_norms)
@@ -334,19 +361,76 @@ class EigenSolver(SOC_Solver):
             fx_cov = torch.mean(fx[:,None,:] * fx[:,:,None], dim = 0)
             
             if self.neural_sde.prior == "positive":
-                fx_cov[0,0] = torch.logsumexp(fx[:,None,0] + fx[:,0,None],dim=0).exp() / fx.shape[0]
+                fx_cov[0,0] = torch.logsumexp(-fx[:,None,0] - fx[:,0,None],dim=0).exp() / fx.shape[0]
+                for i in range(1,self.neural_sde.k):
+                    fx_cov[0,i] = torch.mean(torch.exp(-fx[:,None,0]) * fx[:,i,None],dim=0)
+                    fx_cov[i,0] = fx_cov[0,i]
 
             orth_loss = ((fx_cov - torch.eye(fx.shape[1],device=fx.device))**2).cumsum(dim=0).cumsum(dim=1).diagonal()
         
+        var_loss = var_loss - fx_cov.diagonal() * self.shift
+
         fx_cov = fx_cov.detach()
-        self.neural_sde.eigvals = 2 / self.beta * (1 - fx_cov.diagonal())
-        
-        loss = self.beta.clone() * var_loss + orth_loss, var_loss, orth_loss
-        
-        if update_beta:
-            new_beta = 1 / torch.clip(torch.abs(self.neural_sde.eigvals),min=1e-3)
-            self.f_scaling *= torch.sqrt((2+new_beta*self.neural_sde.eigvals) / (2+self.beta*self.neural_sde.eigvals))
-            self.beta = new_beta
+        new_eigvals = 2 / self.beta * (1 - fx_cov.diagonal())
+        self.neural_sde.eigvals = new_eigvals + self.shift
+
+        if not self.compute_eigen_loss:
+            if self.itr % 100 == 0:
+                new_returns = (self.stored_eigval / (torch.abs(self.prev_stored_eigval)+1e-2) * torch.sign(self.prev_stored_eigval) - 1)
+                self.eigval_returns = utils.compute_EMA(new_returns, self.eigval_returns, self.EMA_coef, self.itr//100)
+                self.eigval_vol = utils.compute_EMA(new_returns**2, self.eigval_vol, self.EMA_coef, self.itr//100)
+
+                self.prev_stored_eigval = self.stored_eigval.clone()
+                self.stored_eigval = self.neural_sde.eigvals[0]
+            else:
+                i = self.itr % 100
+                self.stored_eigval = self.stored_eigval * i / (i+1) + 1 / (i+1) * self.neural_sde.eigvals[0]
+
+            if self.eigval_returns.abs() < 1e-2 and self.eigval_vol < 1e-2 and self.itr >= 500:
+                
+                self.eigval_target = self.prev_stored_eigval
+                self.compute_eigen_loss = True
+                self.stored_eigval = self.prev_stored_eigval
+
+                print(f'Starting fine-tuning, target is lambda = {self.eigval_target}!')
+            
+            loss = self.beta * var_loss + orth_loss
+
+            self.itr += 1
+
+            return loss, var_loss, orth_loss
+
+        else:
+            Deltafx = self.neural_sde.model_laplacian(self.samples)
+            grad_E = -self.neural_sde.b(0, self.samples) * 2 / self.neural_sde.lmbd
+            ratio = Deltafx - grad_norm**2 - torch.einsum('ij,ikj->ik',grad_E,Dfx) + Rx.unsqueeze(1)
+            eigen_loss = torch.mean((ratio - self.eigval_target)**2,dim=0)
+
+            loss = orth_loss + eigen_loss
+            return loss, eigen_loss, orth_loss
+
+
+        # if update_beta:
+        #     if self.shift == 0.0:
+        #         new_beta = 1 / torch.clip(torch.abs(self.neural_sde.eigvals[0]),min=1e-2,max=1e2)
+        #         self.f_scaling *= torch.sqrt(torch.clip((2+new_beta*self.neural_sde.eigvals) / (2+self.beta*self.neural_sde.eigvals), min=0.9**2,max=1.1**2))
+        #         self.beta = new_beta
+
+                # new_returns = (self.neural_sde.eigvals[0] / (torch.abs(self.prev_eigval)+1e-2) * torch.sign(self.prev_eigval) - 1)
+                # self.eigval_returns = utils.compute_EMA(new_returns, self.eigval_returns, self.EMA_coef, self.itr)
+                # self.eigval_vol = utils.compute_EMA(new_returns**2, self.eigval_vol, self.EMA_coef, self.itr)
+                # self.itr += 1
+                # self.prev_eigval = self.neural_sde.eigvals[0]
+
+                # if self.eigval_returns.abs() < 1e-2 and self.eigval_vol < 1e-2:
+                #     self.shift = self.neural_sde.eigvals[0]
+                #     print(f'Shifted the operator with {self.shift}!')
+
+        #     else:
+        #         new_beta = 1 / torch.clip(torch.abs(self.neural_sde.eigvals[1]),min=1e-2,max=1e2)
+        #         self.f_scaling *= torch.sqrt(torch.clip((2+new_beta*self.neural_sde.eigvals) / (2+self.beta*self.neural_sde.eigvals), min=1e-1,max=1e1))
+        #         self.beta = new_beta
+
 
         return loss
     
@@ -452,7 +536,7 @@ class CombinedSDE(nn.Module):
             out = self.eigen_sde.eigf_models[0](x)[0]
             return out, out
         
-        self.eigf_jac = torch.vmap(torch.func.jacrev(eigf_fn,has_aux=True))
+        self.eigf_jac = torch.vmap(torch.func.jacrev(eigf_fn,has_aux=True),randomness='different')
         self.epsilon_param = nn.Parameter(torch.tensor([-5.0],device=self.device))
         self.epsilon = torch.log(1 + torch.exp(self.epsilon_param))
         
@@ -460,7 +544,7 @@ class CombinedSDE(nn.Module):
             out = self.neural_sde.model(x)[0]
             return out, out
         
-        self.model_jac = torch.vmap(torch.func.jacrev(model_fn,has_aux=True))
+        self.model_jac = torch.vmap(torch.func.jacrev(model_fn,has_aux=True),randomness='different')
         self.neural_sde.gamma.requires_grad_(False)
     
     def control(self, t, x, verbose=False):
@@ -561,6 +645,7 @@ class CombinedSDE(nn.Module):
                 terminal_weight = torch.exp(-(self.T - t)*self.neural_sde.terminal_decay).unsqueeze(1)
                 u = (1-terminal_weight) * u + terminal_weight * self.nabla_g(x)
 
+            
             return u
 
         if len(x.shape) == 3:

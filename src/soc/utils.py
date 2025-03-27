@@ -51,11 +51,11 @@ def mala_samples(sde, x, t, lmbd):
         
         # Propose a candidate move using the ULA (Euler–Maruyama) step.
         noise = torch.randn_like(x, device=x.device)
-        drift_x = sde.b(t0, x) * energy_sign
+        drift_x = sde.b(t0, x) * energy_sign * 2 / lmbd
         proposal = x + drift_x * dt + torch.sqrt(lmbd * dt) * torch.einsum("ij,bj->bi", sde.sigma, noise)
         
         # Compute the drift at the proposal point (using time t1).
-        drift_proposal = sde.b(t1, proposal) * energy_sign
+        drift_proposal = sde.b(t1, proposal) * energy_sign * 2 / lmbd
         
         # Compute the forward move residual:
         #   diff_forward = proposal - (x + drift_x*dt)
@@ -194,3 +194,75 @@ def exact_eigfunctions(x, m, neural_sde, cfg, return_grad = False):
         fx = wx * quadratic_form[:,None] / norm
         
         return fx
+    
+
+def stochastic_trajectories_final(
+    sde,
+    x0,
+    t,
+    lmbd,
+    detach=True,
+    verbose=False,
+):
+    with torch.no_grad():
+        log_path_weight_deterministic = torch.zeros(x0.shape[0]).to(x0.device)
+        log_path_weight_stochastic = torch.zeros(x0.shape[0]).to(x0.device)
+        log_terminal_weight = torch.zeros(x0.shape[0]).to(x0.device)
+        for t0, t1 in zip(t[:-1], t[1:]):
+            dt = t1 - t0
+            noise = torch.randn_like(x0).to(x0.device)
+            u0 = sde.control(t0, x0, verbose=verbose)
+
+            update = (
+                sde.b(t0, x0) + torch.einsum("ij,bj->bi", sde.sigma, u0)
+            ) * dt + torch.sqrt(lmbd * dt) * torch.einsum("ij,bj->bi", sde.sigma, noise)
+            x0 = x0 + update
+
+            log_path_weight_deterministic = (
+                log_path_weight_deterministic
+                + dt / lmbd * (-sde.f(t0, x0) - 0.5 * torch.sum(u0**2, dim=1))
+            )
+            log_path_weight_stochastic = log_path_weight_stochastic + torch.sqrt(
+                dt / lmbd
+            ) * (-torch.sum(u0 * noise, dim=1))
+
+        log_terminal_weight = -sde.g(x0) / lmbd
+
+        return (
+                x0,
+                log_path_weight_deterministic,
+                log_path_weight_stochastic,
+                log_terminal_weight,
+            )
+    
+
+def control_objective(
+    sde, x0, ts, lmbd, batch_size, total_n_samples=65536, verbose=False
+):
+    n_batches = int(total_n_samples // batch_size)
+    effective_n_samples = n_batches * batch_size
+    for k in range(n_batches):
+        state0 = x0.repeat(batch_size, 1)
+        (
+            _,
+            log_path_weight_deterministic,
+            _,
+            log_terminal_weight,
+        ) = stochastic_trajectories_final(
+            sde,
+            state0,
+            ts.to(state0),
+            lmbd,
+            verbose=verbose,
+        )
+        if k == 0:
+            ctrl_losses = -lmbd * (log_path_weight_deterministic + log_terminal_weight)
+        else:
+            ctrl_loss = -lmbd * (log_path_weight_deterministic + log_terminal_weight)
+            ctrl_losses = torch.cat((ctrl_losses, ctrl_loss), 0)
+        if k % 32 == 31:
+            print(f"Batch {k+1}/{n_batches} done")
+    
+    mean_loss = torch.nanmean(ctrl_losses)
+    std_loss = torch.nanmean((ctrl_losses - mean_loss)**2).sqrt()
+    return mean_loss, std_loss

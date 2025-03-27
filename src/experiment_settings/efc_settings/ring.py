@@ -48,7 +48,7 @@ class Ring(EigenSDE):
     # Energy: b = -grad E
     def energy(self, x):
         xnorm = torch.norm(x, dim=-1)
-        return (xnorm**2 - self.radius**2) * xnorm**2
+        return self.scale * (xnorm**2 - self.radius**2) * xnorm**2
 
     # Base Drift
     def b(self, t, x):

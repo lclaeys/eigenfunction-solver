@@ -259,13 +259,15 @@ def define_variables(cfg, ts, compute_optimal=True):
         return x0, sigma, optimal_sde, neural_sde
 
     elif cfg.method.setting=='ring':
-        x0 = torch.zeros(cfg.method.d).to(cfg.method.device)
+        
         sigma = torch.eye(cfg.method.d).to(cfg.method.device)
 
-        P = torch.ones(cfg.method.d).to(cfg.method.device)
+        P = 1.0 * torch.ones(cfg.method.d).to(cfg.method.device)
         Q = 0.5 * torch.eye(cfg.method.d).to(cfg.method.device)
-        scale = 1.0 
+        scale = 1.0
         radius = 5.0
+
+        x0 = torch.ones(cfg.method.d).to(cfg.method.device) * radius / np.sqrt(2 * cfg.method.d)
 
         optimal_sde = None
 

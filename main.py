@@ -39,7 +39,7 @@ import wandb
 from socmatching.SOC_matching.utils import (
     get_folder_name,
     get_file_name,
-    control_objective,
+#    control_objective,
     save_results,
     compute_EMA,
     normalization_constant,
@@ -51,7 +51,7 @@ from socmatching.SOC_matching.method import (
 )
 
 from src.soc.settings import get_energy, get_Rfunc
-from src.soc.utils import exact_eigfunctions, log_normalization_constant, compute_EMA_log
+from src.soc.utils import exact_eigfunctions, log_normalization_constant, compute_EMA_log, control_objective
 
 from src.soc.method import EigenSolver, CombinedSDE, CombinedSolver
 
@@ -143,7 +143,7 @@ def main(rank, world_size, algorithms, gpus, args_cfg):
     first_ts = ts[:cutoff_idx]
     last_ts = ts[cutoff_idx:]
     
-    compute_optimal = not os.path.exists(experiment_folder + '/optimal_sde.pkl')
+    compute_optimal = (not os.path.exists(experiment_folder + '/optimal_sde.pkl')) or cfg.method.setting[:2] == "OU"
 
     if cfg.method.setting == "double_well":
         compute_optimal = False
@@ -297,7 +297,8 @@ def main(rank, world_size, algorithms, gpus, args_cfg):
             
             optimizer = optim.Adam(params=solver.neural_sde.eigf_model.parameters(),
                             lr=cfg.optim.adam_lr, 
-                            eps=cfg.optim.adam_eps)
+                            eps=cfg.optim.adam_eps,
+                            weight_decay=cfg.optim.weight_decay)
             scheduler = torch.optim.lr_scheduler.LambdaLR(
             optimizer,
             lr_lambda = lambda epoch: ((epoch + 1) / warmup_epochs) if epoch < warmup_epochs else
@@ -306,7 +307,8 @@ def main(rank, world_size, algorithms, gpus, args_cfg):
         else:
             optimizers = [optim.Adam(params=solver.neural_sde.eigf_models[i].parameters(),
                             lr=cfg.optim.adam_lr, 
-                            eps=cfg.optim.adam_eps) for i in range(cfg.method.k)]
+                            eps=cfg.optim.adam_eps,
+                            weight_decay=cfg.optim.weight_decay) for i in range(cfg.method.k)]
             schedulers = [torch.optim.lr_scheduler.LambdaLR(
             optimizers[i],
             lr_lambda = lambda epoch: ((epoch + 1) / warmup_epochs) if epoch < warmup_epochs else
@@ -493,8 +495,7 @@ def main(rank, world_size, algorithms, gpus, args_cfg):
     for var in control_objective_variables:
         training_info[var] = []
 
-    #compute_L2_error = ground_truth_control is not None
-    compute_L2_error = False
+    compute_L2_error = ground_truth_control is not None
     compute_eigen_error = False
 
     EMA_weight_mean_coeff = 0.002
@@ -536,6 +537,8 @@ def main(rank, world_size, algorithms, gpus, args_cfg):
 
                 verbose = itr == 0
 
+                update_beta = (itr != 0) and (itr % 500 == 0) and cfg.method.adaptive_beta
+
                 if algorithm == "EFC":
                     (
                     loss,
@@ -544,6 +547,7 @@ def main(rank, world_size, algorithms, gpus, args_cfg):
                     ) = solver.loss(
                         sample_size=cfg.method.n_samples_loss,
                         verbose=True,
+                        update_beta=update_beta
                     )
                     if cfg.arch.joint:
                         wandb_log['loss'] = loss.detach()
@@ -618,20 +622,21 @@ def main(rank, world_size, algorithms, gpus, args_cfg):
 
                 else:
                     for i in range(loss.shape[0]):
-                        # backward pass on i-th loss function
-                        grads = torch.autograd.grad(loss[i], solver.neural_sde.eigf_models[i].parameters(), retain_graph=True)
+                        if not (cfg.method.adaptive_beta and solver.shift == 0 and i == 1):
+                            # backward pass on i-th loss function
+                            grads = torch.autograd.grad(loss[i], solver.neural_sde.eigf_models[i].parameters(), retain_graph=True)
 
-                        for param, grad in zip(solver.neural_sde.eigf_models[i].parameters(),grads):
-                            param.grad = grad
+                            for param, grad in zip(solver.neural_sde.eigf_models[i].parameters(),grads):
+                                param.grad = grad
 
-                        if i == 0 and neural_sde.prior == "positive":
-                            torch.nn.utils.clip_grad_norm_(solver.neural_sde.eigf_models[i].parameters(), 1.0)
-                        
-                        optimizers[i].step()
-                        optimizers[i].zero_grad()
-                        
-                        if schedulers[i] is not None:
-                            schedulers[i].step()
+                            if i == 0 and neural_sde.prior == "positive":
+                                torch.nn.utils.clip_grad_norm_(solver.neural_sde.eigf_models[i].parameters(), 10.0)
+                            
+                            optimizers[i].step()
+                            optimizers[i].zero_grad()
+                            
+                            if schedulers[i] is not None:
+                                schedulers[i].step()
                 
                 with torch.no_grad():
                     end = time.time()
@@ -708,37 +713,43 @@ def main(rank, world_size, algorithms, gpus, args_cfg):
                             training_info["norm_sqd_diff_single"].append(norm_sqd_diff_single.detach())
                             wandb_log['l2_error_single'] = norm_sqd_diff_single.detach()
 
-                    if compute_eigen_error and itr % 100 == 0:
-                        x = solver.samples
+                    if algorithm=="EFC":
+                        if itr % 100 == 0 and compute_eigen_error: 
+                            x = solver.samples
 
-                        exact_fx = exact_eigfunctions(x, 2, neural_sde, cfg, return_grad=False).cpu()
+                            exact_fx = exact_eigfunctions(x, 2, neural_sde, cfg, return_grad=False).cpu()
 
-                        fx = solver.neural_sde.eigf_models[0](x).detach().cpu().squeeze(1)
-                        norm = torch.mean(fx**2).sqrt().detach().cpu()
+                            fx = solver.neural_sde.eigf_models[0](x).detach().cpu().squeeze(1)
+                            if neural_sde.prior == 'positive':
+                                fx = (-fx).exp()
+                            
+                            norm = torch.mean(fx**2).sqrt().detach().cpu()
+                            
+                            eigf_sq_diff = torch.mean((exact_fx[:,0]-fx/norm)**2)
+                            neg_eigf_sq_diff = torch.mean((exact_fx[:,0]+fx/norm)**2)
+                            exact_sq_sum = torch.mean(exact_fx[:,0]**2)
+
+                            l2_err = min(eigf_sq_diff,neg_eigf_sq_diff) / exact_sq_sum
+                            wandb_log['eigf_l2_error_0'] = l2_err
+                            
+                            fx = solver.neural_sde.eigf_models[1](x).detach().cpu().squeeze(1)
+                            norm = torch.mean(fx**2).sqrt().detach().cpu()
+                            
+                            eigf_sq_diff = torch.mean((exact_fx[:,1]-fx/norm)**2)
+                            neg_eigf_sq_diff = torch.mean((exact_fx[:,1]+fx/norm)**2)
+                            exact_sq_sum = torch.mean(exact_fx[:,1]**2)
+
+                            l2_err = min(eigf_sq_diff,neg_eigf_sq_diff) / exact_sq_sum
+                            wandb_log['eigf_l2_error_1'] = l2_err
+
+                            wandb_log['beta'] = solver.beta
+
+                            print(f'Itr {itr+1}: error {wandb_log['eigf_l2_error_0']}, eigvals {solver.neural_sde.eigvals}')
                         
-                        eigf_sq_diff = torch.mean((exact_fx[:,0]-fx/norm)**2)
-                        neg_eigf_sq_diff = torch.mean((exact_fx[:,0]+fx/norm)**2)
-                        exact_sq_sum = torch.mean(exact_fx[:,0]**2)
-
-                        l2_err = min(eigf_sq_diff,neg_eigf_sq_diff) / exact_sq_sum
-                        wandb_log['eigf_l2_error_0'] = l2_err
-                        
-                        fx = solver.neural_sde.eigf_models[1](x).detach().cpu().squeeze(1)
-                        norm = torch.mean(fx**2).sqrt().detach().cpu()
-                        
-                        eigf_sq_diff = torch.mean((exact_fx[:,1]-fx/norm)**2)
-                        neg_eigf_sq_diff = torch.mean((exact_fx[:,1]+fx/norm)**2)
-                        exact_sq_sum = torch.mean(exact_fx[:,1]**2)
-
-                        l2_err = min(eigf_sq_diff,neg_eigf_sq_diff) / exact_sq_sum
-                        wandb_log['eigf_l2_error_1'] = l2_err
-
-                        wandb_log['a'] = solver.a
-                        wandb_log['b'] = solver.b
                         wandb_log['lambda_0'] = solver.neural_sde.eigvals[0]
-                        wandb_log['lambda_1'] = solver.neural_sde.eigvals[1]
-
-                        print(f'Itr {itr+1}: error {wandb_log['eigf_l2_error_0']}, eigvals {solver.neural_sde.eigvals}')
+                        wandb_log['stored_eigval'] = solver.stored_eigval
+                        wandb_log['eigval_returns'] = solver.eigval_returns
+                        wandb_log['eigval_vol'] = solver.eigval_vol
 
                     if algorithm == "moment" and itr == 5000:
                         current_lr = optimizer.param_groups[-1]["lr"]
@@ -754,7 +765,7 @@ def main(rank, world_size, algorithms, gpus, args_cfg):
                     ):
                         torch.save(solver.state_dict(), experiment_path + f'/solver_weights_{itr+1:_}.pth')
                         
-                        objective_mean, objective_std = control_objective(neural_sde, x0, ts, cfg.method.lmbd, 128, total_n_samples=cfg.method.objective_samples)
+                        objective_mean, objective_std = control_objective(neural_sde, x0, ts, cfg.method.lmbd, 4096, total_n_samples=cfg.method.objective_samples)
 
                         wandb_log['objective_mean'] = objective_mean.detach()
 
