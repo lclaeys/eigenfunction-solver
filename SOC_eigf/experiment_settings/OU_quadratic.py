@@ -35,7 +35,7 @@ class OU_Quadratic(NeuralSDE):
         ido_cfg=None
     ):
         super().__init__(
-            device="cuda",
+            device=device,
             dim=dim,
             u=u,
             lmbd=lmbd,
@@ -80,6 +80,10 @@ class OU_Quadratic(NeuralSDE):
                 2,
                 3,
             )
+    
+    # Laplacian of energy
+    def Delta_E(self, x):
+        return torch.ones(x.shape[:-1],device=self.device) * torch.trace(self.A)
 
     # Running cost
     def f(self, t, x):
@@ -120,8 +124,6 @@ class OU_Quadratic(NeuralSDE):
         indices = torch.tensor(indices,device = self.device)
 
         return 1/self.lmbd * (-torch.trace(A) + (Lambda[None,:].sqrt() * (2*indices+1)).sum(dim=1))
-
-
 
 
     def exact_eigfunctions(self, x, m, use_scipy = False, return_grad = False):
@@ -212,6 +214,9 @@ class OU_Quadratic(NeuralSDE):
         return fx
     
     def exact_grad_log_gs(self, x):
+        """
+        Return grad log phi for the ground state.
+        """
         A = -self.A
 
         if not torch.allclose(A, A.T):
@@ -225,6 +230,110 @@ class OU_Quadratic(NeuralSDE):
 
         # QUADRATIC FORM
         return - torch.einsum('ni,ij->nj',x, D)
+    
+    def exact_eigf_control(self, ts, x, m, verbose=False):
+        """
+        Return control for symmetric LQR obtained from the first k eigenfunctions. Requires A,P,Q to be diagonal
+
+        Args:
+            ts (tensor)[N]: times
+            x (tensor)[N,d] or [N,B,d]: system states
+            m (int): number of eigf to use 
+        """
+
+        A = -self.A
+        P = self.P
+        Q = self.Q
+
+        if not (torch.allclose(A.diag().diag(), A) and torch.allclose(P.diag().diag(), P)  and torch.allclose(Q.diag().diag(), Q)):
+            raise ValueError("For exact control, all matrices must be diagonal.")
+        
+        X = A.T @ A + 2 * self.P
+
+        Lambda, U = torch.linalg.eigh(X)
+        
+        D =  1/self.lmbd * (-A + U @ torch.diag(Lambda.sqrt()) @ U.T)
+
+        original_shape = x.shape
+        
+        if len(original_shape)==3:
+            x = x.reshape(-1,self.dim)
+
+        # GS
+        grad_log_gs = - torch.einsum('ni,ij->nj', x, D)
+
+        if len(original_shape)==3:
+            grad_log_gs = grad_log_gs.reshape(original_shape)
+
+        # HIGHER ORDER TERMS
+        values, indices = self.smallest_combinations(Lambda, m)
+        eigvals = self.exact_eigvals(m)
+
+        sigma_sq = 2*(A.diag()**2 + 2*P.diag()).sqrt() / (A.diag() + (A.diag()**2 + 2*P.diag()).sqrt() + 2*Q.diag())
+
+        input_transform = U @ torch.pow(Lambda,1/4).diag() * np.sqrt(2/self.lmbd)
+        reshaped_x = x @ input_transform
+
+        grad_log_correction = torch.zeros_like(grad_log_gs, device=self.device)
+
+        grad_term = torch.zeros_like(grad_log_gs, device=self.device)
+        term = torch.zeros(grad_log_gs.shape[:2], device=self.device)
+
+        for i in range(m):
+            # compute i-th correction term.
+            n = torch.tensor(indices[i], device = 'cpu') #indices on cpu
+            n_gpu = torch.tensor(indices[i], device = self.device)
+
+            if (n % 2 == 0).all():
+                hermite_evals, grad_hermite_evals = self.eval_hermitenorm(n,reshaped_x, return_grad=True)
+
+                norms = torch.sqrt(torch.tensor(factorial(indices[i]), dtype = x.dtype, device = x.device))
+
+                hermite_evals /= norms
+
+                fx_poly  = torch.prod(hermite_evals,dim=1)
+
+                grad_hermite_evals /= norms
+
+                # (n,d)
+                ratio_term = grad_hermite_evals / hermite_evals
+                grad_fx_poly = fx_poly[:,None] * (ratio_term) @ input_transform.T
+
+                inner_prod_ratio = torch.prod((1/2*torch.lgamma(n_gpu+1) - torch.lgamma((n_gpu/2)+1)).exp() * ((sigma_sq-1)/2)**(n_gpu/2))
+                exp_weight = torch.exp(-(eigvals[i]-eigvals[0]) * (self.T - ts) * self.lmbd/2)
+
+                if verbose:
+                    print(f"Adding term with alpha = {n}, inner product {inner_prod_ratio}, eigval {eigvals[i]}")
+
+                if len(original_shape)==2:
+                    term += exp_weight * inner_prod_ratio * fx_poly
+                    grad_term += exp_weight[:,None] * inner_prod_ratio * grad_fx_poly
+                    
+                if len(original_shape)==3:
+                    fx_poly = fx_poly.reshape(original_shape[:2])
+                    grad_fx_poly = grad_fx_poly.reshape(original_shape)
+
+                    term += exp_weight[:,None] * inner_prod_ratio * fx_poly
+                    grad_term += exp_weight[:,None,None] * inner_prod_ratio * grad_fx_poly
+
+        grad_log_correction = grad_term / term.unsqueeze(-1)
+        
+        if len(original_shape)==2:
+            exact_control = self.lmbd * torch.einsum(
+                    "ij,bj->bi",
+                    torch.transpose(self.sigma, 0, 1),
+                    grad_log_gs + grad_log_correction,
+                )
+            return exact_control
+        
+        if len(original_shape)==3:
+            exact_control = self.lmbd * torch.einsum(
+                    "ij,abj->abi",
+                    torch.transpose(self.sigma, 0, 1),
+                    grad_log_gs + grad_log_correction,
+                )
+            return exact_control
+
 
     def generate_probabilist_hermite_coeffs(self, m, dtype, device):
         """

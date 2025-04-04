@@ -10,7 +10,7 @@ import numpy as np
 from collections import OrderedDict
 
 class FullyConnectedUNet(torch.nn.Module):
-    def __init__(self, dim=2, hdims=[256, 128, 64], scaling_factor=1.0):
+    def __init__(self, dim_in=2, dim_out=2, hdims=[256, 128, 64], scaling_factor=1.0):
         super().__init__()
 
         def initialize_weights(layer, scaling_factor):
@@ -19,14 +19,14 @@ class FullyConnectedUNet(torch.nn.Module):
                     m.weight.data *= scaling_factor
                     m.bias.data *= scaling_factor
 
-        self.down_0 = nn.Sequential(nn.Linear(dim + 1, hdims[0]), nn.ReLU())
+        self.down_0 = nn.Sequential(nn.Linear(dim_in, hdims[0]), nn.ReLU())
         self.down_1 = nn.Sequential(nn.Linear(hdims[0], hdims[1]), nn.ReLU())
         self.down_2 = nn.Sequential(nn.Linear(hdims[1], hdims[2]), nn.ReLU())
         initialize_weights(self.down_0, scaling_factor)
         initialize_weights(self.down_1, scaling_factor)
         initialize_weights(self.down_2, scaling_factor)
 
-        self.res_0 = nn.Sequential(nn.Linear(dim + 1, dim))
+        self.res_0 = nn.Sequential(nn.Linear(dim_in, dim_out))
         self.res_1 = nn.Sequential(nn.Linear(hdims[0], hdims[0]))
         self.res_2 = nn.Sequential(nn.Linear(hdims[1], hdims[1]))
         initialize_weights(self.res_0, scaling_factor)
@@ -35,7 +35,49 @@ class FullyConnectedUNet(torch.nn.Module):
 
         self.up_2 = nn.Sequential(nn.Linear(hdims[2], hdims[1]), nn.ReLU())
         self.up_1 = nn.Sequential(nn.Linear(hdims[1], hdims[0]), nn.ReLU())
-        self.up_0 = nn.Sequential(nn.Linear(hdims[0], dim), nn.ReLU())
+        self.up_0 = nn.Sequential(nn.Linear(hdims[0], dim_out), nn.ReLU())
+        initialize_weights(self.up_0, scaling_factor)
+        initialize_weights(self.up_1, scaling_factor)
+        initialize_weights(self.up_2, scaling_factor)
+
+    def forward(self, x):
+        residual0 = x
+        residual1 = self.down_0(x)
+        residual2 = self.down_1(residual1)
+        residual3 = self.down_2(residual2)
+
+        out2 = self.up_2(residual3) + self.res_2(residual2)
+        out1 = self.up_1(out2) + self.res_1(residual1)
+        out0 = self.up_0(out1) + self.res_0(residual0)
+        return out0
+    
+class FullyConnectedUNet2(torch.nn.Module):
+    def __init__(self, dim_in=2, dim_out=2, hdims=[256, 128, 64], scaling_factor=1.0):
+        super().__init__()
+
+        def initialize_weights(layer, scaling_factor):
+            for m in layer:
+                if isinstance(m, nn.Linear):
+                    m.weight.data *= scaling_factor
+                    m.bias.data *= scaling_factor
+
+        self.down_0 = nn.Sequential(nn.Linear(dim_in, hdims[0]), nn.ReLU())
+        self.down_1 = nn.Sequential(nn.Linear(hdims[0], hdims[1]), nn.ReLU())
+        self.down_2 = nn.Sequential(nn.Linear(hdims[1], hdims[2]), nn.ReLU())
+        initialize_weights(self.down_0, scaling_factor)
+        initialize_weights(self.down_1, scaling_factor)
+        initialize_weights(self.down_2, scaling_factor)
+
+        self.res_0 = nn.Sequential(nn.Linear(dim_in, dim_out))
+        self.res_1 = nn.Sequential(nn.Linear(hdims[0], hdims[0]))
+        self.res_2 = nn.Sequential(nn.Linear(hdims[1], hdims[1]))
+        initialize_weights(self.res_0, scaling_factor)
+        initialize_weights(self.res_1, scaling_factor)
+        initialize_weights(self.res_2, scaling_factor)
+
+        self.up_2 = nn.Sequential(nn.Linear(hdims[2], hdims[1]), nn.ReLU())
+        self.up_1 = nn.Sequential(nn.Linear(hdims[1], hdims[0]), nn.ReLU())
+        self.up_0 = nn.Sequential(nn.Linear(hdims[0], dim_out))
         initialize_weights(self.up_0, scaling_factor)
         initialize_weights(self.up_1, scaling_factor)
         initialize_weights(self.up_2, scaling_factor)
@@ -82,6 +124,129 @@ class SigmoidMLP(torch.nn.Module):
             1 - 1 / exp_factor
         ) * sigmoid_layers_output
         return output
+    
+class GELUNET(torch.nn.Module):
+    def __init__(self, dim=2, k=1, hdims=[256, 128, 64], scaling_factor=1.0):
+        super().__init__()
+
+        def initialize_weights(layer, scaling_factor):
+            for m in layer:
+                if isinstance(m, nn.Linear):
+                    m.weight.data *= scaling_factor
+                    m.bias.data *= scaling_factor
+
+        self.down_0 = nn.Sequential(nn.Linear(dim, hdims[0]), nn.GELU())
+        self.down_1 = nn.Sequential(nn.Linear(hdims[0], hdims[1]), nn.GELU())
+        self.down_2 = nn.Sequential(nn.Linear(hdims[1], hdims[2]), nn.GELU())
+        initialize_weights(self.down_0, scaling_factor)
+        initialize_weights(self.down_1, scaling_factor)
+        initialize_weights(self.down_2, scaling_factor)
+
+        self.res_0 = nn.Sequential(nn.Linear(dim, k))
+        self.res_1 = nn.Sequential(nn.Linear(hdims[0], hdims[0]))
+        self.res_2 = nn.Sequential(nn.Linear(hdims[1], hdims[1]))
+        initialize_weights(self.res_0, scaling_factor)
+        initialize_weights(self.res_1, scaling_factor)
+        initialize_weights(self.res_2, scaling_factor)
+
+        self.up_2 = nn.Sequential(nn.Linear(hdims[2], hdims[1]), nn.GELU())
+        self.up_1 = nn.Sequential(nn.Linear(hdims[1], hdims[0]), nn.GELU())
+        self.up_0 = nn.Sequential(nn.Linear(hdims[0], k))
+        initialize_weights(self.up_0, scaling_factor)
+        initialize_weights(self.up_1, scaling_factor)
+        initialize_weights(self.up_2, scaling_factor)
+
+    def forward(self, x):
+        residual0 = x
+        residual1 = self.down_0(x)
+        residual2 = self.down_1(residual1)
+        residual3 = self.down_2(residual2)
+
+        out2 = self.up_2(residual3) + self.res_2(residual2)
+        out1 = self.up_1(out2) + self.res_1(residual1)
+        out0 = self.up_0(out1) + self.res_0(residual0)
+        return out0
+    
+class SIRENUNET(torch.nn.Module):
+    def __init__(self, dim=2, k=1, hdims=[256, 128, 64], scaling_factor=1.0):
+        super().__init__()
+
+        def sine_init(m):
+            with torch.no_grad():
+                if hasattr(m, 'weight'):
+                    num_input = m.weight.size(-1)
+                    # See supplement Sec. 1.5 for discussion of factor 30
+                    m.weight.uniform_(-np.sqrt(6 / num_input) / 30, np.sqrt(6 / num_input) / 30)
+
+
+        def first_layer_sine_init(m):
+            with torch.no_grad():
+                if hasattr(m, 'weight'):
+                    num_input = m.weight.size(-1)
+                    # See paper sec. 3.2, final paragraph, and supplement Sec. 1.5 for discussion of factor 30
+                    m.weight.uniform_(-1 / num_input, 1 / num_input)
+
+        self.down_0 = nn.Sequential(nn.Linear(dim, hdims[0]), Sine())
+        self.down_1 = nn.Sequential(nn.Linear(hdims[0], hdims[1]), Sine())
+        self.down_2 = nn.Sequential(nn.Linear(hdims[1], hdims[2]), Sine())
+        first_layer_sine_init(self.down_0)
+        sine_init(self.down_1)
+        sine_init(self.down_2)
+
+        self.res_0 = nn.Sequential(nn.Linear(dim, k))
+        self.res_1 = nn.Sequential(nn.Linear(hdims[0], hdims[0]))
+        self.res_2 = nn.Sequential(nn.Linear(hdims[1], hdims[1]))
+        first_layer_sine_init(self.res_0)
+        sine_init(self.res_1)
+        sine_init(self.res_2)
+
+        self.up_2 = nn.Sequential(nn.Linear(hdims[2], hdims[1]), Sine())
+        self.up_1 = nn.Sequential(nn.Linear(hdims[1], hdims[0]), Sine())
+        self.up_0 = nn.Sequential(nn.Linear(hdims[0], k),Sine())
+        sine_init(self.up_0)
+        sine_init(self.up_1)
+        sine_init(self.up_2)
+
+class GaussUNET(torch.nn.Module):
+    def __init__(self, dim=2, k=1, hdims=[256, 128, 64], scaling_factor=1.0):
+        super().__init__()
+
+        def initialize_weights(m, dim=dim):
+            if hasattr(m, 'weight'):
+                nn.init.uniform_(m.weight, a=-1, b=1)
+                nn.init.constant_(m.bias, 0.0)
+
+        self.down_0 = nn.Sequential(nn.Linear(dim, hdims[0]), GaussianActivation())
+        self.down_1 = nn.Sequential(nn.Linear(hdims[0], hdims[1]), GaussianActivation())
+        self.down_2 = nn.Sequential(nn.Linear(hdims[1], hdims[2]), GaussianActivation())
+        initialize_weights(self.down_0)
+        initialize_weights(self.down_1)
+        initialize_weights(self.down_2)
+
+        self.res_0 = nn.Sequential(nn.Linear(dim, k))
+        self.res_1 = nn.Sequential(nn.Linear(hdims[0], hdims[0]))
+        self.res_2 = nn.Sequential(nn.Linear(hdims[1], hdims[1]))
+        initialize_weights(self.res_0)
+        initialize_weights(self.res_1)
+        initialize_weights(self.res_2)
+
+        self.up_2 = nn.Sequential(nn.Linear(hdims[2], hdims[1]), GaussianActivation())
+        self.up_1 = nn.Sequential(nn.Linear(hdims[1], hdims[0]), GaussianActivation())
+        self.up_0 = nn.Sequential(nn.Linear(hdims[0], k))
+        initialize_weights(self.up_0)
+        initialize_weights(self.up_1)
+        initialize_weights(self.up_2)
+
+    def forward(self, x):
+        residual0 = x
+        residual1 = self.down_0(x)
+        residual2 = self.down_1(residual1)
+        residual3 = self.down_2(residual2)
+
+        out2 = self.up_2(residual3) + self.res_2(residual2)
+        out1 = self.up_1(out2) + self.res_1(residual1)
+        out0 = self.up_0(out1) + self.res_0(residual0)
+        return out0
     
 class Sine(nn.Module):
     def __init(self):
@@ -168,7 +333,7 @@ class GaussianNet(nn.Module):
     def _initialize_weights(self, dim):
         for m in self.net:
             if isinstance(m, nn.Linear):
-                nn.init.uniform_(m.weight, a=-1/dim, b=1/dim)
+                nn.init.uniform_(m.weight, a=-1, b=1)
                 nn.init.constant_(m.bias, 0.0)
 
     def forward(self, x):

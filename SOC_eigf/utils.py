@@ -37,6 +37,8 @@ def mala_samples(sde, x, t, lmbd, verbose=False):
         energy_sign = 1.0
     else:
         energy_sign = -1.0
+
+    
     last_energy = sde.energy(x) * 2 / lmbd * energy_sign
 
     time_iterator = zip(t[:-1], t[1:])
@@ -44,7 +46,7 @@ def mala_samples(sde, x, t, lmbd, verbose=False):
     if verbose:
         time_iterator = tqdm(time_iterator, total=len(t)-1, desc="MALA Sampling")
 
-    for t0, t1 in time_iterator:
+    for t0, t1 in time_iterator:        
         dt = t1 - t0
         
         # Propose a candidate move using the ULA (Euler–Maruyama) step.
@@ -130,3 +132,167 @@ def compute_EMA(value, EMA_value, EMA_coeff=0.01, itr=0):
         return (value + itr * EMA_value) / (itr + 1)
     else:
         return EMA_coeff * value + (1 - EMA_coeff) * EMA_value
+
+def stochastic_trajectories(
+    sde,
+    x0,
+    t,
+    lmbd,
+    detach=True,
+    verbose=False,
+):
+    xt = [x0]
+    noises = []
+    controls = []
+    log_path_weight_deterministic = torch.zeros(x0.shape[0]).to(x0.device)
+    log_path_weight_stochastic = torch.zeros(x0.shape[0]).to(x0.device)
+    log_terminal_weight = torch.zeros(x0.shape[0]).to(x0.device)
+    
+    for t0, t1 in zip(t[:-1], t[1:]):
+        dt = t1 - t0
+        noise = torch.randn_like(x0).to(x0.device)
+        noises.append(noise)
+        u0 = sde.control(t0, x0, verbose=verbose)
+        
+        update = (
+            sde.b(t0, x0) + torch.einsum("ij,bj->bi", sde.sigma, u0)
+        ) * dt + torch.sqrt(lmbd * dt) * torch.einsum("ij,bj->bi", sde.sigma, noise)
+        
+        x0 = x0 + update
+        
+        xt.append(x0)
+        controls.append(u0)
+    
+        log_path_weight_deterministic = (
+            log_path_weight_deterministic
+            + dt / lmbd * (-sde.f(t0, x0) - 0.5 * torch.sum(u0**2, dim=1))
+        )
+        log_path_weight_stochastic = log_path_weight_stochastic + torch.sqrt(
+            dt / lmbd
+        ) * (-torch.sum(u0 * noise, dim=1))
+
+    log_terminal_weight = -sde.g(x0) / lmbd
+
+    if detach:
+        return (
+            torch.stack(xt).detach(),
+            torch.stack(noises).detach(),
+            log_path_weight_deterministic.detach(),
+            log_path_weight_stochastic.detach(),
+            log_terminal_weight.detach(),
+            torch.stack(controls).detach(),
+        )
+    else:
+        return (
+            torch.stack(xt),
+            torch.stack(noises),
+            log_path_weight_deterministic,
+            log_path_weight_stochastic,
+            log_terminal_weight,
+            torch.stack(controls),
+        )
+
+def stochastic_trajectories_final(
+    sde,
+    x0,
+    t,
+    lmbd,
+    verbose=False,
+):
+    with torch.no_grad():
+        log_path_weight_deterministic = torch.zeros(x0.shape[0]).to(x0.device)
+        log_path_weight_stochastic = torch.zeros(x0.shape[0]).to(x0.device)
+        log_terminal_weight = torch.zeros(x0.shape[0]).to(x0.device)
+        for t0, t1 in zip(t[:-1], t[1:]):
+            dt = t1 - t0
+            noise = torch.randn_like(x0).to(x0.device)
+            u0 = sde.control(t0, x0, verbose=verbose)
+
+            update = (
+                sde.b(t0, x0) + torch.einsum("ij,bj->bi", sde.sigma, u0)
+            ) * dt + torch.sqrt(lmbd * dt) * torch.einsum("ij,bj->bi", sde.sigma, noise)
+            x0 = x0 + update
+
+            log_path_weight_deterministic = (
+                log_path_weight_deterministic
+                + dt / lmbd * (-sde.f(t0, x0) - 0.5 * torch.sum(u0**2, dim=1))
+            )
+            log_path_weight_stochastic = log_path_weight_stochastic + torch.sqrt(
+                dt / lmbd
+            ) * (-torch.sum(u0 * noise, dim=1))
+
+        log_terminal_weight = -sde.g(x0) / lmbd
+
+        return (
+                x0,
+                log_path_weight_deterministic,
+                log_path_weight_stochastic,
+                log_terminal_weight,
+            )
+    
+def log_normalization_constant(
+    sde, x0, ts, cfg, n_batches_normalization=512, ground_truth_control=None
+):
+    log_weights_list = []
+
+    if ground_truth_control is not None:
+        norm_sqd_diff_mean = 0
+    for k in range(n_batches_normalization):
+        (
+            x0,
+            log_path_weight_deterministic,
+            log_path_weight_stochastic,
+            log_terminal_weight,
+        ) = stochastic_trajectories_final(
+            sde,
+            x0,
+            ts.to(x0),
+            cfg.lmbd,
+        )
+        log_weights = (
+            log_path_weight_deterministic
+            + log_path_weight_stochastic
+            + log_terminal_weight
+        )
+        log_weights_list.append(log_weights)
+
+        if k % 32 == 31:
+            print(f"Batch {k+1}/{n_batches_normalization} done")
+    
+    log_weights = torch.stack(log_weights_list, dim=1)
+
+    print(
+        f"Average and std. dev. of log_weights for all batches: {torch.mean(log_weights)} {torch.std(log_weights)}"
+    )
+
+    log_normalization_const = torch.logsumexp(torch.logsumexp(log_weights,dim=0),dim=0) - torch.log(torch.tensor([log_weights.shape[0]*log_weights.shape[1]],device=log_weights.device))
+
+    return log_normalization_const
+
+def control_objective(
+    sde, x0, ts, cfg, batch_size, total_n_samples=65536, verbose=False
+):
+    n_batches = int(total_n_samples // batch_size)
+    effective_n_samples = n_batches * batch_size
+    for k in range(n_batches):
+        state0 = x0.repeat(batch_size, 1)
+        (
+            x0,
+            log_path_weight_deterministic,
+            log_path_weight_stochastic,
+            log_terminal_weight,
+        ) = stochastic_trajectories_final(
+            sde,
+            x0,
+            ts.to(x0),
+            cfg.lmbd,
+        )
+        if k == 0:
+            ctrl_losses = -cfg.lmbd * (log_path_weight_deterministic + log_terminal_weight)
+        else:
+            ctrl_loss = -cfg.lmbd * (log_path_weight_deterministic + log_terminal_weight)
+            ctrl_losses = torch.cat((ctrl_losses, ctrl_loss), 0)
+        if k % 32 == 31:
+            print(f"Batch {k+1}/{n_batches} done")
+    
+    return torch.mean(ctrl_losses), torch.std(ctrl_losses) / np.sqrt(effective_n_samples)
