@@ -10,7 +10,7 @@ import numpy as np
 from collections import OrderedDict
 
 class FullyConnectedUNet(torch.nn.Module):
-    def __init__(self, dim_in=2, dim_out=2, hdims=[256, 128, 64], scaling_factor=1.0):
+    def __init__(self, dim_in=2, dim_out=2, hdims=[256, 128, 64], scaling_factor=1.0, reg=0.0):
         super().__init__()
 
         def initialize_weights(layer, scaling_factor):
@@ -52,7 +52,7 @@ class FullyConnectedUNet(torch.nn.Module):
         return out0
     
 class FullyConnectedUNet2(torch.nn.Module):
-    def __init__(self, dim_in=2, dim_out=2, hdims=[256, 128, 64], scaling_factor=1.0):
+    def __init__(self, dim_in=2, dim_out=2, hdims=[256, 128, 64], scaling_factor=1.0, reg=0.0):
         super().__init__()
 
         def initialize_weights(layer, scaling_factor):
@@ -94,7 +94,7 @@ class FullyConnectedUNet2(torch.nn.Module):
         return out0
     
 class SigmoidMLP(torch.nn.Module):
-    def __init__(self, dim=10, hdims=[128, 128], gamma=3.0, scaling_factor=1.0):
+    def __init__(self, dim=10, hdims=[128, 128], gamma=3.0, scaling_factor=1.0, reg=0.0):
         super().__init__()
 
         self.dim = dim
@@ -126,7 +126,7 @@ class SigmoidMLP(torch.nn.Module):
         return output
     
 class GELUNET(torch.nn.Module):
-    def __init__(self, dim=2, k=1, hdims=[256, 128, 64], scaling_factor=1.0):
+    def __init__(self, dim=2, k=1, hdims=[256, 128, 64], scaling_factor=1.0, reg=0.0):
         super().__init__()
 
         def initialize_weights(layer, scaling_factor):
@@ -168,7 +168,7 @@ class GELUNET(torch.nn.Module):
         return out0
     
 class SIRENUNET(torch.nn.Module):
-    def __init__(self, dim=2, k=1, hdims=[256, 128, 64], scaling_factor=1.0):
+    def __init__(self, dim=2, k=1, hdims=[256, 128, 64], scaling_factor=1., reg=0.0):
         super().__init__()
 
         def sine_init(m):
@@ -208,7 +208,7 @@ class SIRENUNET(torch.nn.Module):
         sine_init(self.up_2)
 
 class GaussUNET(torch.nn.Module):
-    def __init__(self, dim=2, k=1, hdims=[256, 128, 64], scaling_factor=1.0):
+    def __init__(self, dim=2, k=1, hdims=[256, 128, 64], scaling_factor=1.0, reg=0.0):
         super().__init__()
 
         def initialize_weights(m, dim=dim):
@@ -256,7 +256,7 @@ class Sine(nn.Module):
         return torch.sin(30 * input)
 
 class SIREN(nn.Module):
-    def __init__(self, dim=2, k=1, hdims=[128,128,128]):
+    def __init__(self, dim=2, k=1, hdims=[128,128,128], reg=0.0):
         super().__init__()
 
         def sine_init(m):
@@ -302,38 +302,39 @@ class SIREN(nn.Module):
         return out
     
 class GaussianActivation(nn.Module):
-    def __init__(self, a=1.):
+    def __init__(self, a=1., reg = 0.0):
         super().__init__()
         self.a = a
+        self.reg = reg
 
     def forward(self, x):
-        return torch.exp(-x**2/(2*self.a**2))
+        return torch.exp(-x**2/(2*self.a**2)) + self.reg*x
     
 class GaussianNet(nn.Module):
-    def __init__(self, dim=2, k=1, hdims=[128,128,128]):
+    def __init__(self, dim=2, k=1, hdims=[128,128,128], reg=0.0):
         super().__init__()
         
         self.net = []
 
-        self.net.append(nn.Sequential(nn.Linear(dim,hdims[0]),GaussianActivation()))
+        self.net.append(nn.Sequential(nn.Linear(dim,hdims[0]),GaussianActivation(reg=reg)))
         for i in range(len(hdims)-1):
             self.net.append(nn.Sequential(
-                nn.Linear(hdims[i], hdims[i+1]), GaussianActivation()
+                nn.Linear(hdims[i], hdims[i+1]), GaussianActivation(reg=reg)
             ))
         
         self.net.append(nn.Sequential(nn.Linear(hdims[-1], k)))
 
         self.net = nn.Sequential(*self.net)
 
-        self.shift = nn.Parameter(torch.zeros(dim))
-        self.scale = nn.Parameter(torch.ones(dim))
+        self.shift = nn.Parameter(torch.zeros(dim),requires_grad=False)
+        self.scale = nn.Parameter(torch.ones(dim),requires_grad=False)
         # Apply custom initialization
         self._initialize_weights(dim)
 
     def _initialize_weights(self, dim):
         for m in self.net:
             if isinstance(m, nn.Linear):
-                nn.init.uniform_(m.weight, a=-1, b=1)
+                nn.init.xavier_normal_(m.weight)
                 nn.init.constant_(m.bias, 0.0)
 
     def forward(self, x):
@@ -418,3 +419,72 @@ class ConstantControlLinear:
         else:
             control = self.evaluate_ut_tensor(t).unsqueeze(1).repeat(1, x.shape[1], 1)
         return control
+    
+class LowDimControl:
+    def __init__(self, ut, T, xb, dim, delta_t, delta_x):
+        self.ut = ut
+        self.T = T
+        self.xb = xb
+        self.dim = dim
+        self.delta_t = delta_t
+        self.delta_x = delta_x
+
+    def evaluate_ut(self, t, x):
+        x_reshape = x.reshape(-1, self.dim)
+        t = torch.tensor([t]).to(x.device)
+        t = t.reshape(-1, 1).expand(x_reshape.shape[0], 1)
+        tx = torch.cat([t, x_reshape], dim=-1)
+
+        idx = torch.zeros_like(tx).to(tx.device).to(torch.int64)
+
+        idx[:, 0] = torch.ceil(tx[:, 0] / self.delta_t).to(torch.int64)
+
+        idx[:, 1:] = torch.floor((tx[:, 1:] + self.xb - self.delta_x) / self.delta_x).to(torch.int64)
+        idx[:, 1:] = torch.minimum(
+            idx[:, 1:],
+            torch.tensor(self.ut.shape[1] - 1).to(torch.int64).to(idx.device),
+        )
+        idx[:, 1:] = torch.maximum(
+            idx[:, 1:], torch.tensor(0).to(torch.int64).to(idx.device)
+        )
+        control = torch.zeros_like(x_reshape)
+        for j in range(self.dim):
+            idx_j = idx[:, [0, j + 1]]
+            ut_j = self.ut[:, :, j]
+            control_j = ut_j[idx_j[:, 0], idx_j[:, 1]]
+            control[:, j] = control_j
+        return control
+
+    def evaluate_ut_tensor(self, t, x):
+        t = t.reshape(-1, 1, 1).expand(x.shape[0], x.shape[1], 1)
+        tx = torch.cat([t, x], dim=-1)
+        tx_shape = tx.shape
+        tx = tx.reshape(-1, tx.shape[2])
+
+        idx = torch.zeros_like(tx).to(tx.device).to(torch.int64)
+
+        idx[:, 0] = torch.ceil(tx[:, 0] / self.delta_t).to(torch.int64)
+
+        idx[:, 1:] = torch.floor((tx[:, 1:] + self.xb - self.delta_x) / self.delta_x).to(torch.int64)
+        idx[:, 1:] = torch.minimum(
+            idx[:, 1:],
+            torch.tensor(self.ut.shape[1] - 1).to(torch.int64).to(idx.device),
+        )
+        idx[:, 1:] = torch.maximum(
+            idx[:, 1:], torch.tensor(0).to(torch.int64).to(idx.device)
+        )
+        control = torch.zeros_like(tx).to(tx.device)
+        for j in range(self.dim):
+            idx_j = idx[:, [0, j + 1]]
+            ut_j = self.ut[:, :, j]
+            control_j = ut_j[idx_j[:, 0], idx_j[:, 1]]
+            control[:, j + 1] = control_j
+        control = torch.reshape(control, tx_shape)[:, :, 1:]
+        return control
+
+    def __call__(self, t, x, t_is_tensor=False):
+        if not t_is_tensor:
+            return self.evaluate_ut(t, x)
+        else:
+            return self.evaluate_ut_tensor(t, x)
+

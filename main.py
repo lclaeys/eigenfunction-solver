@@ -20,7 +20,7 @@ from SOC_eigf.method import SOC_Solver
 from SOC_eigf.utils import compute_EMA, stochastic_trajectories, stochastic_trajectories_final, log_normalization_constant, control_objective
 from SOC_eigf.experiment_settings import settings
 
-torch.autograd.set_detect_anomaly(True)
+#torch.autograd.set_detect_anomaly(True)
 
 def setup(rank, world_size):
     """Initialize process group for distributed training."""
@@ -44,6 +44,9 @@ def main(rank, world_size, args_cfgs):
     experiment_cfg = OmegaConf.load('experiment_cfg.yaml')
 
     cfg = OmegaConf.merge(experiment_cfg,args_cfg)
+
+    cfg.timing = cfg.get('timing',False)
+    
     torch.manual_seed(cfg.seed)
 
     experiment_folder = f'experiments/{cfg.experiment_name}'
@@ -57,6 +60,11 @@ def main(rank, world_size, args_cfgs):
             raise e
         
         cfg.eigf = saved_eigf_cfg.eigf
+
+    if cfg.timing:
+        experiment_path = 'timing_experiments/' + f'/{cfg.experiment_name}/{cfg.method}/{cfg.run_name}'
+        cfg.solver.finetune=False
+        cfg.num_iterations=1001
 
     os.makedirs(experiment_path,exist_ok=True)
     OmegaConf.save(cfg, experiment_path + '/cfg.yaml')
@@ -75,6 +83,7 @@ def main(rank, world_size, args_cfgs):
     else:
         ground_truth_control = None
 
+    neural_sde.u = ground_truth_control
     state0 = x0.repeat(cfg.optim.batch_size, 1)
 
     if cfg.method == "COMBINED":
@@ -117,6 +126,9 @@ def main(rank, world_size, args_cfgs):
         sigma=sigma,
         solver_cfg=cfg.solver
     )
+
+    if cfg.get('saved_solver_path',"") != "":
+        solver.load_state_dict(torch.load(experiment_folder + f'/{cfg.method}/{cfg.saved_solver_path}/solver_weights_15_000.pth'))
 
     algorithm = cfg.solver.ido_algorithm
     if algorithm == "SOCM_exp":
@@ -189,6 +201,7 @@ def main(rank, world_size, args_cfgs):
         
     gs_optimizer, eigf_optimizer, ido_optimizer = initialize_optimizers()
 
+
     logged_variables=[
         "itr",
         "iteration_time",
@@ -210,13 +223,29 @@ def main(rank, world_size, args_cfgs):
     if cfg.compute_objective_every is not None:
         logged_variables += ['control_objective_mean','control_objective_std']
     
-    if cfg.setting[:2] == "OU":
+    if optimal_sde is not None:
         logged_variables += ['control_l2_error']
+        neural_sde.use_learned_control = False
+        objective_mean, objective_std = control_objective(
+                            neural_sde,
+                            x0,
+                            ts,
+                            cfg,
+                            65536,
+                            65536
+                        )
+        print(f'Ground truth: objective {objective_mean:5.6E} pm {objective_std:5.6E}')
+        neural_sde.use_learned_control = True
+
 
     logs = {var: np.full(cfg.num_iterations,np.nan) for var in logged_variables}
 
     EMA_weight_mean_coeff = 0.002
+    EMA_loss_coeff = 0.05
 
+    rel_loss_norm=1.0
+    pinn_loss_norm=1.0
+    
     # diagnostic to assess convergence and smoothen eigenvalue computation
     if cfg.eigf.k > 1 or cfg.solver.finetune:
         eigval_returns = 0.0
@@ -232,7 +261,8 @@ def main(rank, world_size, args_cfgs):
             solver.eigf_loss = 'ritz'
 
     with torch.enable_grad():
-        torch.save(solver.state_dict(), experiment_path + f'/solver_weights_0.pth')
+        if not cfg.timing:
+            torch.save(solver.state_dict(), experiment_path + f'/solver_weights_0.pth')
         for itr in range(cfg.num_iterations):
             solver.train()
             start = time.time()
@@ -241,15 +271,38 @@ def main(rank, world_size, args_cfgs):
             logs["itr"][itr] = itr
 
             if cfg.method == "EIGF":
-                (
-                    loss, 
-                    main_loss, 
-                    orth_loss,
-                    gs_fx,
-                    gs_Dfx
-                ) = solver.gs_loss(
-                    verbose=verbose
-                )
+                
+                if cfg.solver.trajectory_loss==False:
+                    solver.update_samples(verbose)
+                else:
+                    states, _, _, _, _, _ = stochastic_trajectories(neural_sde, state0, ts, cfg.lmbd, detach=True)
+                    solver.samples = states.reshape(-1,cfg.d).detach()
+
+                if solver.eigf_loss not in ["cyclical"]:
+                    (
+                        loss, 
+                        main_loss, 
+                        orth_loss,
+                        gs_fx,
+                        gs_Dfx
+                    ) = solver.gs_loss(
+                        verbose=verbose
+                    )
+                else:
+                    (
+                        loss, 
+                        pinn_loss,
+                        rel_loss,
+                        orth_loss,
+                        gs_fx,
+                        gs_Dfx
+                    ) = solver.gs_loss(
+                        verbose=verbose,
+                        itr = itr
+                    )
+                    
+                    main_loss = 1/2*pinn_loss.detach() + 1/2*rel_loss.detach()
+
 
                 logs['loss'][itr] = loss.detach()
                 logs['main_loss'][itr] = main_loss.detach()
@@ -258,7 +311,7 @@ def main(rank, world_size, args_cfgs):
                 loss.backward()
 
                 # gradient clipping for stability
-                torch.nn.utils.clip_grad_norm_(solver.neural_sde.eigf_gs_model.parameters(), 1.0)
+                torch.nn.utils.clip_grad_norm_(solver.neural_sde.eigf_gs_model.parameters(), 3.0)
 
                 gs_optimizer.step()
                 gs_optimizer.zero_grad()
@@ -406,90 +459,96 @@ def main(rank, world_size, args_cfgs):
                 end = time.time()
                 logs['iteration_time'][itr] = end - start
 
-                solver.eval()
+                if not cfg.timing:
+                    solver.eval()
 
-                if itr % cfg.compute_objective_every == 0:
-                    objective_mean, objective_std = control_objective(
-                        neural_sde,
-                        state0,
-                        ts,
-                        cfg,
-                        65536,
-                        65536
-                    )
-                    logs['control_objective_mean'][itr] = objective_mean
-                    logs['control_objective_std'][itr] = objective_std
-                    print(f'Iteration {itr} {cfg.run_name}: objective {objective_mean:5.6E} pm {objective_std:5.6E}')
+                    if itr % cfg.compute_objective_every == 0:
+                        objective_mean, objective_std = control_objective(
+                            neural_sde,
+                            x0,
+                            ts,
+                            cfg,
+                            65536,
+                            65536
+                        )
+                        logs['control_objective_mean'][itr] = objective_mean
+                        logs['control_objective_std'][itr] = objective_std
+                        print(f'Iteration {itr} {cfg.run_name}: objective {objective_mean:5.6E} pm {objective_std:5.6E}')
 
-                if cfg.setting[:2] == "OU" and itr % cfg.compute_control_error_every == 0:
-                    # use trajectories from ground truth control
-                    neural_sde.use_learned_control = False
-                    neural_sde.u = ground_truth_control
-                    (
-                    states,
-                    _,
-                    _,
-                    _,
-                    _,
-                    target_control
-                    ) = stochastic_trajectories(
-                        neural_sde,
-                        state0,
-                        ts.to(state0),
-                        cfg.lmbd,
-                        detach=True)
-                    neural_sde.use_learned_control = True
-                    
-                    t_eval = int(len(ts) * cfg.eval_frac)
-                    if t_eval == len(ts):
-                        t_eval = len(ts)-1
+                    if (optimal_sde is not None) and itr % cfg.compute_control_error_every == 0:
+                        # use trajectories from ground truth control
+                        neural_sde.use_learned_control = False
+                        (
+                        states,
+                        _,
+                        _,
+                        _,
+                        _,
+                        target_control
+                        ) = stochastic_trajectories(
+                            neural_sde,
+                            state0,
+                            ts.to(state0),
+                            cfg.lmbd,
+                            detach=True)
+                        neural_sde.use_learned_control = True
+                        
+                        t_eval = int(len(ts) * cfg.eval_frac)
+                        if t_eval == len(ts):
+                            t_eval = len(ts)-1
 
-                    learned_control = neural_sde.control(ts[:t_eval],states[:t_eval]).detach()
-                    target_control = target_control[:t_eval]
+                        learned_control = neural_sde.control(ts[:t_eval],states[:t_eval]).detach()
+                        target_control = target_control[:t_eval]
 
-                    norm_sqd_diff = torch.sum(
-                            (target_control - learned_control) ** 2
-                            / (target_control.shape[0] * target_control.shape[1])
-                    )
-                    logs['control_l2_error'][itr] = norm_sqd_diff
-                    print(f'Iteration {itr} {cfg.run_name}: control l2 error {norm_sqd_diff:5.6E}')
+                        norm_sqd_diff = torch.sum(
+                                (target_control - learned_control) ** 2
+                                / (target_control.shape[0] * target_control.shape[1])
+                        )
+                        logs['control_l2_error'][itr] = norm_sqd_diff
+                        print(f'Iteration {itr} {cfg.run_name}: control l2 error {norm_sqd_diff:5.6E}')
 
-                if cfg.method == "EIGF" and cfg.setting[:2] == "OU" and itr % cfg.log_every == 0:
-                    x = solver.samples.detach()
+                    if cfg.method == "EIGF" and cfg.setting[:2] == "OU" and itr % cfg.log_every == 0:
+                        x = solver.samples.detach()
 
-                    exact_fx = solver.neural_sde.exact_eigfunctions(x, 1).cpu()
-                    exact_grad_log_x = solver.neural_sde.exact_grad_log_gs(x).cpu()
+                        exact_fx = solver.neural_sde.exact_eigfunctions(x, 1).cpu()
+                        exact_grad_log_x = solver.neural_sde.exact_grad_log_gs(x).cpu()
+                        
 
-                    predicted_fx = gs_fx.exp().detach().cpu()
-                    predicted_grad_log_fx = gs_Dfx.detach().cpu()
+                        if solver.neural_sde.confining:
+                            predicted_fx = gs_fx.exp().detach().cpu()
+                        else:
+                            Ex = solver.neural_sde.energy(x).detach() * 2 / solver.neural_sde.lmbd
+                            predicted_fx = (gs_fx + Ex[:,None]).exp().detach().cpu()
 
-                    #predicted_fx_norm = torch.mean(predicted_fx**2).sqrt()
+                        predicted_grad_log_fx = gs_Dfx.detach().cpu()
 
-                    l2_err = torch.mean((exact_fx - predicted_fx)**2)
-                    
-                    logs['eigf_error'][itr] = l2_err
+                        #predicted_fx_norm = torch.mean(predicted_fx**2).sqrt()
+                        if solver.neural_sde.confining:
+                            l2_err = torch.mean((exact_fx - predicted_fx)**2)
+                        else:
+                            l2_err = torch.logsumexp(((exact_fx - predicted_fx)**2).log() - 2*Ex[:,None].cpu(),dim=0).exp().squeeze() / exact_fx.shape[0]
+                        
+                        logs['eigf_error'][itr] = l2_err
 
-                    l2_err_grad_log = torch.mean((exact_grad_log_x - predicted_grad_log_fx.squeeze(1))**2).sum(dim=-1).mean()
+                        l2_err_grad_log = torch.mean((exact_grad_log_x - predicted_grad_log_fx.squeeze(1))**2).sum(dim=-1).mean()
 
-                    logs['grad_log_eigf_error'][itr] = l2_err_grad_log
+                        logs['grad_log_eigf_error'][itr] = l2_err_grad_log
 
-                    eigval_error = (exact_eigvals[0] - solver.neural_sde.eigvals[0])**2
-                    print(f'Iteration {itr} {cfg.run_name} [GROUND STATE]: error {l2_err:.3E} | gradlog error {l2_err_grad_log.detach().squeeze():.3E} | loss {loss.detach().squeeze():.3E} | orth loss {orth_loss.detach().squeeze():.3E}')
-                    
-                    if cfg.eigf.k > 1 and es_loss is not None:
-                        print(f'Iteration {itr} {cfg.run_name} [EXCITED STATE]: loss {es_loss.detach().squeeze():.3E} | orth loss {es_orth_loss.detach().squeeze():.3E} | stored eigval 1 {prev_stored_eigval_1}')
-                    
+                        eigval_error = (exact_eigvals[0] - solver.neural_sde.eigvals[0])**2
+                        print(f'Iteration {itr} {cfg.run_name} [GROUND STATE]: error {l2_err:.3E} | gradlog error {l2_err_grad_log.detach().squeeze():.3E} | loss {loss.detach().squeeze():.3E} | orth loss {orth_loss.detach().squeeze():.3E}')
+                        
+                        if cfg.eigf.k > 1 and es_loss is not None:
+                            print(f'Iteration {itr} {cfg.run_name} [EXCITED STATE]: loss {es_loss.detach().squeeze():.3E} | orth loss {es_orth_loss.detach().squeeze():.3E} | stored eigval 1 {prev_stored_eigval_1}')
+                
+                    if (itr % cfg.save_model_every == 0):
+                        if cfg.eigf.k > 1 and cfg.method == "EIGF":
+                            solver.neural_sde.eigvals[1] = prev_stored_eigval_1
+                        torch.save(solver.state_dict(), experiment_path + f'/solver_weights_{itr:_}.pth')
+                        torch.save(solver.neural_sde.state_dict(), experiment_path + f'/neural_sde_weights.pth')
 
                 if itr % cfg.log_every == 0:
-                    df = pd.DataFrame(logs)
-                    df.to_csv(experiment_path + f'/logs.csv',index=False)
-            
-                if (itr % cfg.save_model_every == 0):
-                    if cfg.eigf.k > 1 and cfg.method == "EIGF":
-                        solver.neural_sde.eigvals[1] = prev_stored_eigval_1
-                    torch.save(solver.state_dict(), experiment_path + f'/solver_weights_{itr:_}.pth')
-                    torch.save(solver.neural_sde.state_dict(), experiment_path + f'/neural_sde_weights.pth')
-    
+                        df = pd.DataFrame(logs)
+                        df.to_csv(experiment_path + f'/logs.csv',index=False)
     cleanup()
 
 # logic for expanding passed cfg parameters to allow multiple runs in parallel

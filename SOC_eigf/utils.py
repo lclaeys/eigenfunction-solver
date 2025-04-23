@@ -156,7 +156,7 @@ def stochastic_trajectories(
         
         update = (
             sde.b(t0, x0) + torch.einsum("ij,bj->bi", sde.sigma, u0)
-        ) * dt + torch.sqrt(lmbd * dt) * torch.einsum("ij,bj->bi", sde.sigma, noise)
+        ).clip(min=-10/dt.sqrt(),max=10/dt.sqrt()) * dt + torch.sqrt(lmbd * dt) * torch.einsum("ij,bj->bi", sde.sigma, noise)
         
         x0 = x0 + update
         
@@ -210,7 +210,7 @@ def stochastic_trajectories_final(
 
             update = (
                 sde.b(t0, x0) + torch.einsum("ij,bj->bi", sde.sigma, u0)
-            ) * dt + torch.sqrt(lmbd * dt) * torch.einsum("ij,bj->bi", sde.sigma, noise)
+            ).clip(min=-10/dt.sqrt(),max=10/dt.sqrt()) * dt + torch.sqrt(lmbd * dt) * torch.einsum("ij,bj->bi", sde.sigma, noise)
             x0 = x0 + update
 
             log_path_weight_deterministic = (
@@ -283,7 +283,7 @@ def control_objective(
             log_terminal_weight,
         ) = stochastic_trajectories_final(
             sde,
-            x0,
+            state0,
             ts.to(x0),
             cfg.lmbd,
         )

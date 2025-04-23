@@ -11,7 +11,7 @@ import nvidia_smi
 import functorch
 
 from SOC_eigf.models import FullyConnectedUNet, FullyConnectedUNet2, SIREN, GaussianNet, SigmoidMLP, GELUNET, SIRENUNET, GaussUNET
-from SOC_eigf.utils import mala_samples, stochastic_trajectories
+from SOC_eigf.utils import mala_samples, stochastic_trajectories, compute_EMA
 
 class NeuralSDE(nn.Module):
     """
@@ -54,7 +54,8 @@ class NeuralSDE(nn.Module):
         self.k = eigf_cfg.get('k', 1)
         self.hdims_eigf = eigf_cfg.get('hdims', [128,128,128])
         self.arch_eigf = eigf_cfg.get('arch', 'SIREN')
-
+        self.reg = eigf_cfg.get('reg', 0.0)
+        
         self.hdims_ido = ido_cfg.get('hdims',[256,128,64])
         self.hdims_M = ido_cfg.get('hdims_M',[128,128])
         self.scaling_factor_nabla_V = ido_cfg.get('scaling_factor_nabla_V', 1.0)
@@ -64,7 +65,8 @@ class NeuralSDE(nn.Module):
         self.gamma3 = ido_cfg.get('gamma3',1.0)
         self.T_cutoff = ido_cfg.get('T_cutoff',1.0)
         self.train_scalar = ido_cfg.get('train_scalar',False)
-        
+        self.use_eigval = ido_cfg.get('use_eigval', True)
+
         self.eigval_diff = None
 
     def control(self, t, x, verbose=False):
@@ -109,14 +111,16 @@ class NeuralSDE(nn.Module):
             self.eigf_gs_model = network_modules[self.arch_eigf](
                     dim=self.dim,
                     hdims=self.hdims_eigf,
-                    k = 1
-                    ).to(self.device)
+                    k = 1,
+                    reg=self.reg
+                    ).to(self.device)            
             
             if self.k > 1 and self.method == "EIGF":
                 self.eigf_model = network_modules[self.arch_eigf](
                     dim=self.dim,
                     hdims=self.hdims_eigf,
-                    k = self.k-1
+                    k = self.k-1,
+                    reg=self.reg
                     ).to(self.device)
 
             # save eigvals
@@ -263,6 +267,9 @@ class NeuralSDE(nn.Module):
                     
                     ido_control = self.ido_model(ido_ttx)
                 
+                if not self.use_eigval:
+                    self.eigval_diff = 0
+
                 return torch.cat([eigf_control[:ido_idx], torch.exp(-ido_ts_expand * self.eigval_diff) * ido_control + eigf_control[ido_idx:]], dim=0)
         
         if len(x.shape) == 3:
@@ -297,6 +304,9 @@ class NeuralSDE(nn.Module):
 
                     fx = self.ido_model(ido_ttx_reshape)
                     ido_control = torch.reshape(fx, (ido_x.shape[0],ido_x.shape[1], ido_x.shape[2]))
+
+                if not self.use_eigval:
+                    self.eigval_diff = 0
 
                 return torch.cat([eigf_control[:ido_idx], torch.exp(- ido_ts_repeat * self.eigval_diff) * ido_control + eigf_control[ido_idx:]], dim=0)
 
@@ -357,15 +367,7 @@ class SOC_Solver(nn.Module):
     def control(self, t0, x0):
         return self.neural_sde.control(t0, x0)
     
-    """
-    Loss for ground state, parametrized as phi = exp(f)
-
-    Calling this function updates the stored samples.
-    """
-    def gs_loss(
-        self,
-        verbose=False
-    ):
+    def update_samples(self, verbose):
         if self.samples is None:
             if verbose:
                 print('Burning in Langevin...')
@@ -383,12 +385,22 @@ class SOC_Solver(nn.Module):
             
             with torch.no_grad():
                 if hasattr(self.neural_sde.eigf_gs_model,'shift'):
-                    self.neural_sde.eigf_gs_model.shift.copy_(shift)
-                    self.neural_sde.eigf_gs_model.scale.copy_(scale)
+                    self.neural_sde.eigf_gs_model.shift.data.copy_(shift)
+                    self.neural_sde.eigf_gs_model.scale.data.copy_(scale)
         
         else:
             self.samples = mala_samples(self.neural_sde,self.samples,self.sample_langevin_ts,self.lmbd).detach_()
 
+    """
+    Loss for ground state, parametrized as phi = exp(f)
+    """
+    def gs_loss(
+        self,
+        rel_loss_norm=1.0,
+        pinn_loss_norm=1.0,
+        itr=1,
+        verbose=False
+    ):
         if self.neural_sde.confining:
             log_importance_weight = torch.zeros(self.samples.shape[0], device=self.device)
         else:
@@ -399,6 +411,13 @@ class SOC_Solver(nn.Module):
 
         sq_f_norm = (torch.logsumexp(fx[:,None,:] + fx[:,:,None], dim = 0).exp() / fx.shape[0]).clip(min=1e-4)
         orth_loss = (sq_f_norm - 1)**2
+        
+        # if (orth_loss - 1.0).abs() < 0.1:
+        #     reg_loss = (Dfx**2).mean() / (fx**2).mean()
+        #     min_log_var = -2
+        #     nonconst_reg = -1 * torch.log(reg_loss).clip(max=min_log_var) + min_log_var
+
+        #     orth_loss = orth_loss + torch.relu(0.1-(orth_loss-1.0).abs()) * 10 * nonconst_reg
 
         if self.eigf_loss in ['var','ritz']:
             Rx = self.neural_sde.f(None,self.samples) * 2 / self.lmbd**2
@@ -446,9 +465,8 @@ class SOC_Solver(nn.Module):
             
             Lfx = - Deltafx - grad_norm**2 + torch.einsum('ij,ikj->ik',grad_Ex,Dfx) * 2 / self.lmbd + Rx.unsqueeze(1)
 
-            sq_diff = ((Lfx - self.neural_sde.eigvals[0])**2).clip(min=1e-8)
-
             if self.eigf_loss == 'rel':
+                sq_diff = ((Lfx - self.neural_sde.eigvals[0])**2).clip(min=1e-8)
                 rel_loss = torch.logsumexp(sq_diff.log() + log_importance_weight[:,None],dim=0).exp() / fx.shape[0]
 
                 return (
@@ -460,6 +478,7 @@ class SOC_Solver(nn.Module):
                 )
             
             elif self.eigf_loss == "pinn":
+                sq_diff = ((Lfx - self.neural_sde.eigvals[0])**2).clip(min=1e-8)
                 pinn_loss = torch.logsumexp(sq_diff.log() + 2*fx,dim=0).exp() / fx.shape[0]
 
                 return (
@@ -468,6 +487,19 @@ class SOC_Solver(nn.Module):
                     orth_loss, 
                     fx.detach(), 
                     Dfx.detach(),
+                )
+            
+            elif self.eigf_loss == "log_rel":
+                ratio = (Lfx / self.neural_sde.eigvals[0]).clip(min=1e-6, max = 1e6)
+                sq_diff = (ratio.log()**2).clip(min=1e-8)
+                log_rel_loss = torch.logsumexp(sq_diff.log() + log_importance_weight[:,None],dim=0).exp() / fx.shape[0]
+
+                return (
+                    log_rel_loss + orth_loss,
+                    log_rel_loss, 
+                    orth_loss, 
+                    fx.detach(), 
+                    Dfx.detach()
                 )
     
     """
@@ -492,12 +524,19 @@ class SOC_Solver(nn.Module):
 
         # inner prods with scaled gs
         if (1 - self.beta * self.neural_sde.eigvals[0] / 2) <= 0:
-            self.beta = self.neural_sde.eigvals[0]
+            self.beta = 1/self.neural_sde.eigvals[0]
 
         gs_cov = torch.mean((gs_fx).exp() * fx * importance_weight[:,None],dim=0) * (1 - self.beta * self.neural_sde.eigvals[0] / 2).sqrt()
 
         orth_loss = ((f_cov - torch.eye(f_cov.shape[0],device=self.device))**2).sum() + 2*(gs_cov**2).sum()
+        # if (orth_loss - 1.0).abs() < 0.1:
+        #     reg_loss = fx.var() / (fx**2).mean()
+        #     min_log_var = 0
+        #     nonconst_reg = -1 * torch.log(reg_loss).clip(max=min_log_var) + min_log_var
 
+        #     orth_loss = orth_loss + torch.relu(0.1-(orth_loss-1.0).abs()) * 10 * nonconst_reg
+
+        
         # <\nabla f, \nabla f>_mu
         sq_grad_norm = (grad_norm**2 * importance_weight[:,None]).mean(dim=0).sum()
                 
