@@ -15,6 +15,8 @@ from SOC_eigf.experiment_settings.OU_quadratic import OU_Quadratic
 from SOC_eigf.experiment_settings.ring import Ring
 from SOC_eigf.experiment_settings.ring_particles import RingParticles
 from SOC_eigf.experiment_settings.double_well import DoubleWell
+from SOC_eigf.experiment_settings.double_well_hard import DoubleWellHard
+
 
 def ground_truth_control(cfg, ts, x0, **kwargs):
     if (
@@ -50,20 +52,36 @@ def ground_truth_control(cfg, ts, x0, **kwargs):
 
         return optimal_sde
     
-    elif cfg.setting == "double_well":
-        optimal_sde = DoubleWell(
-            device=cfg.device,
-            u=None,
-            dim=cfg.d,
-            lmbd=cfg.lmbd,
-            kappa=kwargs["kappa"],
-            nu=kwargs["nu"],
-            sigma=kwargs["sigma"],
-            T=cfg.T,
-            method=cfg.method,
-            eigf_cfg=cfg.eigf,
-            ido_cfg=cfg.ido
-        )
+    elif cfg.setting == "double_well" or cfg.setting == "double_well_hard":
+        if cfg.setting == "double_well":
+            optimal_sde = DoubleWell(
+                device=cfg.device,
+                u=None,
+                dim=cfg.d,
+                lmbd=cfg.lmbd,
+                kappa=kwargs["kappa"],
+                nu=kwargs["nu"],
+                sigma=kwargs["sigma"],
+                T=cfg.T,
+                method=cfg.method,
+                eigf_cfg=cfg.eigf,
+                ido_cfg=cfg.ido
+            )
+        else:
+            optimal_sde = DoubleWellHard(
+                device=cfg.device,
+                u=None,
+                dim=cfg.d,
+                lmbd=cfg.lmbd,
+                kappa=kwargs["kappa"],
+                nu=kwargs["nu"],
+                sigma=kwargs["sigma"],
+                T=cfg.T,
+                method=cfg.method,
+                eigf_cfg=cfg.eigf,
+                ido_cfg=cfg.ido
+            )
+
         xb = 2.75
         delta_t = cfg.delta_t_optimal
         delta_x = cfg.delta_x_optimal
@@ -145,6 +163,20 @@ def define_neural_sde(cfg, ts, x0, **kwargs):
             ido_cfg=cfg.ido
         )
     elif cfg.setting == "double_well":
+        neural_sde = DoubleWell(
+            device=cfg.device,
+            u=None,
+            dim=cfg.d,
+            lmbd=cfg.lmbd,
+            kappa=kwargs["kappa"],
+            nu=kwargs["nu"],
+            sigma=kwargs["sigma"],
+            T=cfg.T,
+            method=cfg.method,
+            eigf_cfg=cfg.eigf,
+            ido_cfg=cfg.ido
+        )
+    elif cfg.setting == "double_well_hard":
         neural_sde = DoubleWell(
             device=cfg.device,
             u=None,
@@ -245,8 +277,11 @@ def define_variables(cfg, ts):
 
         return x0, sigma, optimal_sde, neural_sde
     
-    elif cfg.setting == "double_well":
-        x0 = torch.zeros(cfg.d).to(cfg.device)
+    elif cfg.setting == "double_well" or "double_well_hard":
+        if cfg.setting == "double_well":
+            x0 = torch.zeros(cfg.d).to(cfg.device)
+        elif cfg.setting == "double_well_hard":
+            x0 = -torch.ones(cfg.d).to(cfg.device)
 
         kappa_i = 5
         nu_i = 5
