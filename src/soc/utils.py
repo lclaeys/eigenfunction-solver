@@ -174,7 +174,7 @@ def exact_eigfunctions(x, m, neural_sde, cfg, return_grad = False):
     """
     A = neural_sde.A
     P = neural_sde.P
-    lmbda = cfg.method.lmbd
+    lmbda = cfg.lmbd
 
     D = compute_D(A, P, lmbda)
     energy = QuadraticEnergy(-  2/lmbda * A + 2*D)

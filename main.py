@@ -1,64 +1,26 @@
-import sys
+"""
+
+Main script for running experiments. Once again, structure is adapted from main.py in https://github.com/facebookresearch/SOC-matching.
+
+"""
 import os
-import argparse
-
-project_root = os.path.abspath("..")  # If notebooks is one folder above src
-if project_root not in sys.path:
-    sys.path.insert(0, project_root)
-# Get the parent directory (one level above)
-cwd = os.getcwd()
-parent_dir = os.path.dirname(cwd)
-sys.path.insert(0,parent_dir + "/socmatching")
-
 import numpy as np
 import pandas as pd
-import seaborn as sns
-import ipywidgets as widgets
-import matplotlib.pyplot as plt
 import torch
 import torch.optim as optim
-import torch_optimizer as torch_optim
-import argparse
-
-from torch.utils.data import Dataset, DataLoader
 import torch.distributed as dist
 import torch.multiprocessing as mp
-from torch.nn.parallel import DistributedDataParallel as DDP
-from torch.utils.data import DataLoader, TensorDataset, DistributedSampler
-import torch.nn as nn
-import torch.nn.functional as F
-from tqdm import tqdm
 import math
 from omegaconf import OmegaConf
-import yaml
 import time
 import pickle
+from copy import deepcopy
 
-import wandb
+from SOC_eigf.method import SOC_Solver
+from SOC_eigf.utils import compute_EMA, stochastic_trajectories, stochastic_trajectories_final, log_normalization_constant, control_objective
+from SOC_eigf.experiment_settings import settings
 
-from socmatching.SOC_matching.utils import (
-    get_folder_name,
-    get_file_name,
-#    control_objective,
-    save_results,
-    compute_EMA,
-    normalization_constant,
-    stochastic_trajectories
-)
-
-from socmatching.SOC_matching.method import (
-    SOC_Solver,
-)
-
-from src.soc.settings import get_energy, get_Rfunc
-from src.soc.utils import exact_eigfunctions, log_normalization_constant, compute_EMA_log, control_objective
-
-from src.soc.method import EigenSolver, CombinedSDE, CombinedSolver
-
-from src.experiment_settings.socm_settings.settings import define_variables as define_variables_socm
-from src.experiment_settings.efc_settings.settings import define_variables as define_variables_efc
-
-# Code essentially copied from SOC_matching main.py
+#torch.autograd.set_detect_anomaly(True)
 
 def setup(rank, world_size):
     """Initialize process group for distributed training."""
@@ -68,342 +30,151 @@ def cleanup():
     """Destroy process group to free resources."""
     dist.destroy_process_group()
 
-def main(rank, world_size, algorithms, gpus, args_cfg):
-    """
-    Config entries expected:
-        method.seed: random seed
-        method.algorithm: algorithm name
-        method.setting: problem setting
-        method.T: final T
-        method.num_stemps: number of timesteps
-        optim.batch_size: batch size for optimization
-        optim.M_lr: learning rate
-        optim.nabla_V_lr: learning rate
-    """
+def main(rank, world_size, args_cfgs):
     setup(rank, world_size)
-
     # Set device for the current process
-    device = torch.device(f"cuda:{gpus[rank]}")
+    print(OmegaConf.to_yaml(args_cfgs[rank]))
+
+    device = torch.device(f"cuda:{args_cfgs[rank].gpu}")
     torch.cuda.init()
     torch.cuda.set_device(device)
-    algorithm = algorithms[rank]
 
-    experiment_cfg = OmegaConf.load('experiment_config.yaml')
+    args_cfg = args_cfgs[rank]
 
-    efc_cfg = OmegaConf.load('efc_config.yaml')
-    socm_cfg = OmegaConf.load('socm_config.yaml')
+    experiment_cfg = OmegaConf.load('experiment_cfg.yaml')
 
-    efc_cfg = OmegaConf.merge(experiment_cfg, efc_cfg)
-    socm_cfg = OmegaConf.merge(experiment_cfg, socm_cfg)
-    efc_cfg = OmegaConf.merge(efc_cfg, args_cfg)
-    socm_cfg = OmegaConf.merge(socm_cfg, args_cfg)
-    if experiment_cfg.method.combine:
-        cfg = OmegaConf.merge(efc_cfg, socm_cfg)
-    elif algorithm == "EFC":
-        cfg = efc_cfg
-    else:
-        cfg = socm_cfg
-    cfg.method.algorithm = algorithm
-    name = algorithm + "_COMBINED" if cfg.method.combine else algorithm
-    print(cfg.experiment.name)
-    wandb.init(
-        project="neural-eigenfunction-learner",
-        group = cfg.experiment.name,
-        name = name,
-        config=dict(cfg),
-        job_type='eval'
-    )
+    cfg = OmegaConf.merge(experiment_cfg,args_cfg)
 
-    torch.manual_seed(cfg.method.seed)
-    cfg.method.device = "cuda"
-
-    appendix = ""
-    if algorithm == "EFC" and not cfg.method.combine:
-        appendix = f'_{cfg.method.k}'
-        if cfg.arch.prior is not None:
-            appendix += f'_{cfg.arch.prior}'
+    cfg.timing = cfg.get('timing',False)
     
-    if cfg.experiment.appendix is not None:
-        appendix += cfg.experiment.appendix
+    torch.manual_seed(cfg.seed)
 
-    experiment_folder = f'experiments/{cfg.experiment.name}'
-    experiment_path = experiment_folder + f'/{name}' + appendix
+    experiment_folder = f'experiments/{cfg.experiment_name}'
+    experiment_path = experiment_folder + f'/{cfg.method}/{cfg.run_name}'
+
+    if cfg.method == "COMBINED":
+        try:
+            saved_eigf_cfg = OmegaConf.load(experiment_folder + f'/EIGF/{cfg.trained_eigf_run_name}/cfg.yaml')
+        except FileNotFoundError as e:
+            print('Error: Please train EIGF model before attempting to train combined model!')
+            raise e
+        
+        cfg.eigf = saved_eigf_cfg.eigf
+
+    if cfg.timing:
+        experiment_path = 'timing_experiments/' + f'/{cfg.experiment_name}/{cfg.method}/{cfg.run_name}'
+        cfg.solver.finetune=False
+        cfg.num_iterations=1001
 
     os.makedirs(experiment_path,exist_ok=True)
     OmegaConf.save(cfg, experiment_path + '/cfg.yaml')
-    OmegaConf.save(efc_cfg, experiment_path + '/efc_cfg.yaml')
-    OmegaConf.save(socm_cfg, experiment_path + '/socm_cfg.yaml')
-
-    # if algorithm != "EFC" and not cfg.method.combine and cfg.experiment.appendix == "":
-    #     cfg.method.T = cfg.method.train_T
-    #     cfg.method.num_steps = cfg.method.train_steps
-
-    ts = torch.linspace(0, cfg.method.T, cfg.method.num_steps + 1).to(cfg.method.device)
-    cutoff_idx = torch.searchsorted(ts,cfg.method.T - cfg.method.cutoff_T) - 1
-    first_ts = ts[:cutoff_idx]
-    last_ts = ts[cutoff_idx:]
     
-    compute_optimal = (not os.path.exists(experiment_folder + '/optimal_sde.pkl')) or cfg.method.setting[:2] == "OU"
+    ts = torch.linspace(0, cfg.T, cfg.num_steps + 1).to(cfg.device)
 
-    if cfg.method.setting == "double_well":
-        compute_optimal = False
+    if cfg.method=="COMBINED":
+        cutoff_idx = torch.searchsorted(ts,cfg.T - cfg.ido.T_cutoff) - 1
+        first_ts = ts[:cutoff_idx]
+        ido_ts = ts[cutoff_idx:]
 
-    if algorithm == "EFC":
-        x0, sigma, optimal_sde, neural_sde = define_variables_efc(cfg, ts, compute_optimal)
-        log_normalization_const = 0
-    elif not cfg.method.combine:
-        x0, sigma, optimal_sde, neural_sde, u_warm_start = define_variables_socm(cfg, ts, compute_optimal)
-    else:
-        x0, sigma, optimal_sde, eigen_sde = define_variables_efc(efc_cfg, ts, compute_optimal)
-        x0, sigma, optimal_sde, socm_sde, u_warm_start = define_variables_socm(socm_cfg, ts, compute_optimal)
+    x0, sigma, optimal_sde, neural_sde = settings.define_variables(cfg, ts)
 
-        try:
-            checkpoint = torch.load(experiment_folder + f'/EFC_2/solver_weights_80_000.pth')
-        except FileNotFoundError as e:
-            print('Error: Please train EFC model before attempting to train combined model!')
-            raise e
-
-        eigen_sde_dict = {}
-        for key in checkpoint.keys():
-            if key[:10] == "neural_sde":
-                eigen_sde_dict[key[11:]] = checkpoint[key]
-        eigen_sde.load_state_dict(eigen_sde_dict)
-
-        neural_sde = CombinedSDE(socm_sde,
-                                 eigen_sde, 
-                                 cutoff_T = cfg.method.cutoff_T,
-                                 train_value=cfg.method.train_value,
-                                 use_terminal=cfg.method.use_terminal)
-        
-        # Freeze parameters of eigensolver
-        neural_sde.initialize_models()
-
-        for param in neural_sde.eigen_sde.parameters():
-            param.requires_grad = False
-
-    if cfg.method.load_state:
-        checkpoint = torch.load(experiment_folder + f'/{algorithm}_T1/solver_weights_80_000.pth')
-        neural_sde_dict = {}
-        checkpoint['neural_sde.nabla_V.down_0.0.weight'][:,0] /= cfg.method.T
-        checkpoint['neural_sde.nabla_V.res_0.0.weight'][:,0] /= cfg.method.T
-
-        for key in checkpoint.keys():
-            if key[:10] == "neural_sde":
-                neural_sde_dict[key[11:]] = checkpoint[key]
-                
-        neural_sde.load_state_dict(neural_sde_dict)
-        print('Loaded initialization from T=1 solution.')
-
-    if compute_optimal or cfg.method.setting == "double_well":
-        with open(experiment_folder + '/optimal_sde.pkl','wb') as file:
-            pickle.dump(optimal_sde, file)
-        print('Computed and saved ground truth solution.')
-    else:
-        with open(experiment_folder + '/optimal_sde.pkl','rb') as file:
-            optimal_sde = pickle.load(file)
-            if optimal_sde is not None:
-                 optimal_sde = optimal_sde.to(device)
-
-        if cfg.method.setting == "double_well":
-            optimal_sde.u.ut = optimal_sde.u.ut.to(device)
-        elif cfg.method.setting[:2] == "OU":
-            optimal_sde.u.u = optimal_sde.u.u.to(device)
-
-        print('Loaded ground truth solution.')
-    
     if optimal_sde is not None:
         ground_truth_control = optimal_sde.u
     else:
         ground_truth_control = None
 
+    neural_sde.u = ground_truth_control
     state0 = x0.repeat(cfg.optim.batch_size, 1)
 
-    if algorithm != "EFC" and rank == 0:
-        ########### Compute normalization constant and control L2 error for initial control ############
-        print(
-            f"Estimating normalization constant for initial control..."
-        )
-        norm_ts = last_ts if cfg.method.combine else ts
+    if cfg.method == "COMBINED":
+        try:
+            checkpoint = torch.load(experiment_folder + f'/EIGF/{cfg.trained_eigf_run_name}/neural_sde_weights.pth')
+        except FileNotFoundError as e:
+            print('Error: Please train EIGF model before attempting to train combined model!')
+            raise e
+        
+        neural_sde.load_state_dict(checkpoint, strict=False)
 
-        (
-            log_normalization_const
-        ) = log_normalization_constant(
+        neural_sde.eigf_model = None
+
+        for param in neural_sde.eigf_gs_model.parameters():
+            param.requires_grad = False
+
+        print(f'Succesfully loaded eigenfunction model {cfg.trained_eigf_run_name}.')
+
+    #### Normalization constant ####
+
+    if cfg.method in ['IDO','COMBINED']:
+        norm_state0 = x0.repeat(65536, 1)
+        log_normalization_const = log_normalization_constant(
             neural_sde,
-            state0,
-            norm_ts,
+            norm_state0,
+            ts if cfg.method == "IDO" else ido_ts,
             cfg,
-            n_batches_normalization=512,
+            n_batches_normalization=1,
             ground_truth_control=ground_truth_control,
         )
-        print(
-            f"log_normalization_constant: {log_normalization_const}"
-        )
 
-    log_normalization_const = torch.tensor(log_normalization_const if rank == 0 else 0.0, device=device)
-    dist.broadcast(log_normalization_const, src=0)
+    solver = SOC_Solver(
+        neural_sde,
+        x0,
+        ground_truth_control,
+        T=cfg.T,
+        num_steps=cfg.num_steps,
+        lmbd=cfg.lmbd,
+        d=cfg.d,
+        sigma=sigma,
+        solver_cfg=cfg.solver
+    )
 
-    ####### Initialize Algorithm ########
-    if algorithm == "EFC":
-        solver = EigenSolver(
-            neural_sde,
-            x0,
-            ground_truth_control,
-            T=cfg.method.T,
-            num_steps=cfg.method.num_steps,
-            lmbd=cfg.method.lmbd,
-            d=cfg.method.d,
-            sigma=sigma,
-            langevin_burnin_steps=cfg.method.langevin_burnin_steps,
-            langevin_sample_steps=cfg.method.langevin_sample_steps,
-            langevin_dt=cfg.method.langevin_dt,
-            beta=cfg.loss.beta
-        )
-    elif not cfg.method.combine:
-        solver = SOC_Solver(
-            neural_sde,
-            x0,
-            ground_truth_control,
-            T=cfg.method.T,
-            num_steps=cfg.method.num_steps,
-            lmbd=cfg.method.lmbd,
-            d=cfg.method.d,
-            sigma=sigma,
-        )
-    else:
-        solver = CombinedSolver(
-            neural_sde,
-            x0,
-            T=cfg.method.T,
-            num_steps=cfg.method.num_steps,
-            lmbd=cfg.method.lmbd,
-            d=cfg.method.d,
-            sigma=sigma
-        )
+    if cfg.get('saved_solver_path',"") != "":
+        solver.load_state_dict(torch.load(experiment_folder + f'/{cfg.method}/{cfg.saved_solver_path}/solver_weights_15_000.pth'))
 
+    algorithm = cfg.solver.ido_algorithm
     if algorithm == "SOCM_exp":
         solver.gamma = torch.nn.Parameter(
-            torch.tensor([cfg.method.gamma]).to(cfg.method.device)
+            torch.tensor([cfg.ido.gamma]).to(cfg.device)
         )
-    elif algorithm != "EFC":
-        solver.gamma = cfg.method.gamma
-
-    ####### Set optimizer ########
-    scheduler = None
-
-    if algorithm == "EFC":
-        warmup_epochs = cfg.optim.warmup_epochs
-
-        if cfg.arch.joint:
-            
-            optimizer = optim.Adam(params=solver.neural_sde.eigf_model.parameters(),
-                            lr=cfg.optim.adam_lr, 
-                            eps=cfg.optim.adam_eps,
-                            weight_decay=cfg.optim.weight_decay)
-            scheduler = torch.optim.lr_scheduler.LambdaLR(
-            optimizer,
-            lr_lambda = lambda epoch: ((epoch + 1) / warmup_epochs) if epoch < warmup_epochs else
-                                    0.5 * (1.0 + math.cos(math.pi * (epoch - warmup_epochs) / (cfg.method.num_iterations - warmup_epochs)))
-            )
-        else:
-            optimizers = [optim.Adam(params=solver.neural_sde.eigf_models[i].parameters(),
-                            lr=cfg.optim.adam_lr, 
-                            eps=cfg.optim.adam_eps,
-                            weight_decay=cfg.optim.weight_decay) for i in range(cfg.method.k)]
-            schedulers = [torch.optim.lr_scheduler.LambdaLR(
-            optimizers[i],
-            lr_lambda = lambda epoch: ((epoch + 1) / warmup_epochs) if epoch < warmup_epochs else
-                                    0.5 * (1.0 + math.cos(math.pi * (epoch - warmup_epochs) / (cfg.method.num_iterations - warmup_epochs)))
-            ) for i in range(cfg.method.k)]
-
-    elif not cfg.method.combine:
-        if algorithm == "moment":
-            optimizer = torch.optim.Adam(
-                [{"params": solver.neural_sde.parameters()}]
-                + [{"params": solver.y0, "lr": cfg.optim.y0_lr}],
-                lr=cfg.optim.nabla_V_lr,
-                eps=cfg.optim.adam_eps,
-            )
-        elif algorithm == "SOCM_exp":
-            optimizer = torch.optim.Adam(
-                [{"params": solver.neural_sde.parameters()}]
-                + [{"params": solver.gamma, "lr": cfg.optim.M_lr}],
-                lr=cfg.optim.nabla_V_lr,
-                eps=cfg.optim.adam_eps,
-            )
-        elif algorithm == "SOCM":
-            if cfg.method.use_stopping_time:
-                optimizer = torch.optim.Adam(
-                    [{"params": solver.neural_sde.nabla_V.parameters()}]
-                    + [
-                        {
-                            "params": solver.neural_sde.M.sigmoid_layers.parameters(),
-                            "lr": cfg.optim.M_lr,
-                        }
-                    ]
-                    + [
-                        {
-                            "params": solver.neural_sde.gamma,
-                            "lr": cfg.optim.M_lr,
-                        }
-                    ]
-                    + [
-                        {
-                            "params": solver.neural_sde.gamma2,
-                            "lr": cfg.optim.M_lr,
-                        }
-                    ],
-                    lr=cfg.optim.nabla_V_lr,
-                    eps=cfg.optim.adam_eps,
-                )
-            else:
-                optimizer = torch.optim.Adam(
-                    [{"params": solver.neural_sde.nabla_V.parameters()}]
-                    + [
-                        {
-                            "params": solver.neural_sde.M.sigmoid_layers.parameters(),
-                            "lr": cfg.optim.M_lr,
-                        }
-                    ]
-                    + [
-                        {
-                            "params": solver.neural_sde.gamma,
-                            "lr": cfg.optim.M_lr,
-                        }
-                    ],
-                    lr=cfg.optim.nabla_V_lr,
-                    eps=cfg.optim.adam_eps,
-                )
-        elif algorithm == "rel_entropy":
-            optimizer = torch.optim.Adam(
-                solver.parameters(), lr=cfg.optim.nabla_V_lr, eps=cfg.optim.adam_eps
-            )
-        else:
-            optimizer = torch.optim.Adam(
-                solver.parameters(), lr=cfg.optim.nabla_V_lr, eps=cfg.optim.adam_eps
-            )
     else:
-        if algorithm == "moment":
-            optimizer = torch.optim.Adam(
-                [{"params": solver.neural_sde.neural_sde.parameters()}]
-                + [{"params": solver.y0, "lr": cfg.optim.y0_lr}]
-                + [{"params": solver.neural_sde.epsilon_param}]
-                ,
-                lr=cfg.optim.nabla_V_lr,
-                eps=cfg.optim.adam_eps,
-            )
-        elif algorithm == "SOCM_exp":
-            optimizer = torch.optim.Adam(
-                [{"params": solver.neural_sde.neural_sde.parameters()}]
-                + [{"params": solver.gamma, "lr": cfg.optim.M_lr}]
-                + [{"params": solver.neural_sde.epsilon_param}]
-                ,
-                lr=cfg.optim.nabla_V_lr,
-                eps=cfg.optim.adam_eps,
-            )
-        elif algorithm == "SOCM":
-            if cfg.method.use_stopping_time:
-                optimizer = torch.optim.Adam(
-                    [{"params": solver.neural_sde.neural_sde.model.parameters()}]
+        solver.gamma = cfg.ido.gamma
+
+    def initialize_optimizers():
+        gs_optimizer = None
+        eigf_optimizer = None
+        ido_optimizer = None
+
+        if cfg.method=="EIGF":
+            gs_optimizer = optim.Adam(params=solver.neural_sde.eigf_gs_model.parameters(),
+                                    lr=cfg.optim.adam_lr,
+                                    eps=cfg.optim.adam_eps,
+                                    weight_decay=cfg.optim.adam_wd)
+            gs_optimizer.zero_grad()
+
+            if cfg.eigf.k > 1:
+                eigf_optimizer = optim.Adam(params=solver.neural_sde.eigf_model.parameters(),
+                                    lr=cfg.optim.adam_lr,
+                                    eps=cfg.optim.adam_eps,
+                                    weight_decay=cfg.optim.adam_wd)
+                eigf_optimizer.zero_grad()
+
+        elif cfg.method in ['IDO', 'COMBINED']:
+            if algorithm == "moment":
+                ido_optimizer = torch.optim.Adam(
+                    [{"params": solver.neural_sde.ido_model.parameters()}]
+                    + [{"params": solver.y0, "lr": cfg.optim.y0_lr}],
+                    lr=cfg.optim.ido_lr,
+                    eps=cfg.optim.adam_eps,
+                )
+            elif algorithm == "SOCM_exp":
+                ido_optimizer = torch.optim.Adam(
+                    [{"params": solver.neural_sde.ido_model.parameters()}]
+                    + [{"params": solver.gamma, "lr": cfg.optim.M_lr,"params": solver.neural_sde.gamma, "lr": cfg.optim.M_lr}],
+                    lr=cfg.optim.ido_lr,
+                    eps=cfg.optim.adam_eps,
+                )
+            elif algorithm == "SOCM":
+                ido_optimizer = torch.optim.Adam(
+                    [{"params": solver.neural_sde.ido_model.parameters()}]
                     + [
                         {
                             "params": solver.neural_sde.M.sigmoid_layers.parameters(),
@@ -415,382 +186,441 @@ def main(rank, world_size, algorithms, gpus, args_cfg):
                             "params": solver.neural_sde.gamma,
                             "lr": cfg.optim.M_lr,
                         }
-                    ]
-                    + [
-                        {
-                            "params": solver.neural_sde.gamma2,
-                            "lr": cfg.optim.M_lr,
-                        }
-                    ]
-                    + [{"params": solver.neural_sde.epsilon_param}]
-                    ,
-                    lr=cfg.optim.nabla_V_lr,
+                    ],
+                    lr=cfg.optim.ido_lr,
                     eps=cfg.optim.adam_eps,
                 )
             else:
-                optimizer = torch.optim.Adam(
-                    [{"params": solver.neural_sde.neural_sde.model.parameters()}]
-                    + [
-                        {
-                            "params": solver.neural_sde.M.sigmoid_layers.parameters(),
-                            "lr": cfg.optim.M_lr,
-                        }
-                    ]
-                    + [
-                        {
-                            "params": solver.neural_sde.gamma,
-                            "lr": cfg.optim.M_lr,
-                        }
-                    ]
-                    + [{"params": solver.neural_sde.epsilon_param}]
-                    ,
-                    lr=cfg.optim.nabla_V_lr,
-                    eps=cfg.optim.adam_eps,
+                ido_optimizer = torch.optim.Adam(
+                    solver.neural_sde.ido_model.parameters(), lr=cfg.optim.ido_lr, eps=cfg.optim.adam_eps
                 )
-        elif algorithm == "rel_entropy":
-            optimizer = torch.optim.Adam(
-                [{'params': solver.neural_sde.neural_sde.model.parameters()}]
-                + [{"params": solver.neural_sde.epsilon_param}]
-                ,
-                lr=cfg.optim.nabla_V_lr, 
-                eps=cfg.optim.adam_eps
-            )
-        else:
-            optimizer = torch.optim.Adam(
-                [{'params': solver.neural_sde.neural_sde.model.parameters()}]
-                + [{"params": solver.neural_sde.epsilon_param}]
-                , lr=cfg.optim.nabla_V_lr, eps=cfg.optim.adam_eps
-            )
+
+            ido_optimizer.zero_grad()
+
+        return gs_optimizer, eigf_optimizer, ido_optimizer
         
-        # warmup_epochs = cfg.optim.warmup_epochs
-        # scheduler = torch.optim.lr_scheduler.LambdaLR(
-        #     optimizer,
-        #     lr_lambda = lambda epoch: ((epoch + 1) / warmup_epochs) if epoch < warmup_epochs else
-        #                             0.5 * (1.0 + math.cos(math.pi * (epoch - warmup_epochs) / (cfg.method.num_iterations - warmup_epochs)))
-        #     )
+    gs_optimizer, eigf_optimizer, ido_optimizer = initialize_optimizers()
 
-    if algorithm == "EFC" and not cfg.arch.joint:
-        for optimizer in optimizers:
-            optimizer.zero_grad()
-    else:
-        optimizer.zero_grad()
 
-    solver.algorithm = cfg.method.algorithm
-    solver.training_info = dict()
-    training_info = solver.training_info
-    training_variables = [
-        "time_per_iteration",
-        "loss",
-        "norm_sqd_diff",
-        "norm_sqd_diff_single"
+    logged_variables=[
+        "itr",
+        "iteration_time",
+        "loss"
     ]
-    control_objective_variables = [
-        "control_objective_mean",
-        "control_objective_std_err",
-        "control_objective_itr",
-        "trajectories",
-    ]
-    for var in training_variables:
-        training_info[var] = []
-    for var in control_objective_variables:
-        training_info[var] = []
 
-    compute_L2_error = ground_truth_control is not None
-    compute_eigen_error = False
+    if cfg.method == "EIGF":
+        logged_variables += ['main_loss', 'orth_loss']
+        
+        if cfg.eigf.k > 1:
+            logged_variables += ['es_loss', 'es_main_loss', 'es_orth_loss']
+
+        if cfg.setting[:2] == "OU":
+            logged_variables += ["eigf_error", "grad_log_eigf_error"]
+            exact_eigvals = solver.neural_sde.exact_eigvals(cfg.eigf.k)
+            print(f"EXACT EIGENVALUE: {exact_eigvals}")
+            solver.neural_sde.eigvals = exact_eigvals
+    
+    if cfg.compute_objective_every is not None:
+        logged_variables += ['control_objective_mean','control_objective_std']
+    
+    if optimal_sde is not None:
+        logged_variables += ['control_l2_error']
+        neural_sde.use_learned_control = False
+        objective_mean, objective_std = control_objective(
+                            neural_sde,
+                            x0,
+                            ts,
+                            cfg,
+                            65536,
+                            65536
+                        )
+        print(f'Ground truth: objective {objective_mean:5.6E} pm {objective_std:5.6E}')
+        neural_sde.use_learned_control = True
+
+
+    logs = {var: np.full(cfg.num_iterations,np.nan) for var in logged_variables}
 
     EMA_weight_mean_coeff = 0.002
+    EMA_loss_coeff = 0.05
 
-    #energy = get_energy(cfg, neural_sde)
-    wandb_log = {}
+    rel_loss_norm=1.0
+    pinn_loss_norm=1.0
+    
+    # diagnostic to assess convergence and smoothen eigenvalue computation
+    if cfg.eigf.k > 1 or cfg.solver.finetune:
+        eigval_returns = 0.0
+        eigval_vol = 0.0
+        eigval_EMA_coeff = 0.5
+        compute_eigval_every = 100
+        prev_stored_eigval = torch.tensor([1.0], device=x0.device,requires_grad=False)
+        stored_eigval = torch.tensor([1.0], device=x0.device,requires_grad=False)
+        prev_stored_eigval_1 = torch.tensor([1.0], device=x0.device,requires_grad=False)
+        stored_eigval_1 = torch.tensor([1.0], device=x0.device,requires_grad=False)
+        eigval_converged = False
+        if cfg.solver.finetune:
+            solver.eigf_loss = 'ritz'
 
-    ###### Train control ######
-    with torch.inference_mode(False):
-        with torch.enable_grad():
+    with torch.enable_grad():
+        if not cfg.timing:
             torch.save(solver.state_dict(), experiment_path + f'/solver_weights_0.pth')
-            for itr in range(cfg.method.num_iterations):
-                solver.train()
-                torch.manual_seed(itr)
-                start = time.time()
+        for itr in range(cfg.num_iterations):
+            solver.train()
+            start = time.time()
 
-                compute_control_objective = (
-                    itr == 0
-                    or itr % cfg.method.compute_control_objective_every
-                    == cfg.method.compute_control_objective_every - 1
-                    or itr == cfg.method.num_iterations - 1
-                )
+            verbose = itr == 0
+            logs["itr"][itr] = itr
 
-                compute_init = (
-                    itr == 0
-                    or itr % cfg.method.compute_init_every == cfg.method.compute_init_every - 1
-                ) and cfg.method.combine
-
-                if compute_init:
-                    init_state,_,_,_,_,_,_,_ = stochastic_trajectories(
-                        neural_sde,
-                        state0,
-                        first_ts.to(state0),
-                        lmbd=cfg.method.lmbd,
-                        detach=True
-                    )
-                    init_state = init_state[-1]
-                    print('Computed new initial trajectory.')
-
-                verbose = itr == 0
-
-                update_beta = (itr != 0) and (itr % 500 == 0) and cfg.method.adaptive_beta
-
-                if algorithm == "EFC":
-                    (
-                    loss,
-                    var_loss,
-                    orth_loss
-                    ) = solver.loss(
-                        sample_size=cfg.method.n_samples_loss,
-                        verbose=True,
-                        update_beta=update_beta
-                    )
-                    if cfg.arch.joint:
-                        wandb_log['loss'] = loss.detach()
-                        wandb_log['var_loss'] = var_loss.detach()
-                        wandb_log['orth_loss'] = orth_loss.detach()
-                    else:
-                        for i in range(cfg.method.k):
-                            wandb_log[f'loss_{i}'] = loss[i].detach()
-                            wandb_log[f'var_loss_{i}'] = var_loss[i].detach()
-                            wandb_log[f'orth_loss_{i}'] = orth_loss[i].detach()
-                elif not cfg.method.combine:
-                    (
-                    loss,
-                    _,
-                    control_objective_mean,
-                    control_objective_std_err,
-                    trajectory,
-                    log_weight_mean,
-                    weight_std,
-                    stop_indicators,
-                    ) = solver.loss(
-                        cfg.optim.batch_size,
-                        compute_L2_error=False,
-                        algorithm=algorithm,
-                        optimal_control=ground_truth_control,
-                        compute_control_objective=compute_control_objective,
-                        total_n_samples=cfg.method.n_samples_control,
-                        verbose=verbose,
-                        u_warm_start=u_warm_start,
-                        use_warm_start=cfg.method.use_warm_start,
-                        use_stopping_time=cfg.method.use_stopping_time,
-                        log_normalization_const=log_normalization_const
-                    )
-                    
-                    wandb_log['loss'] = loss.detach()
+            if cfg.method == "EIGF":
                 
+                if cfg.solver.trajectory_loss==False:
+                    solver.update_samples(verbose)
                 else:
-                    solver.ts = last_ts
+                    states, _, _, _, _, _ = stochastic_trajectories(neural_sde, state0, ts, cfg.lmbd, detach=True)
+                    solver.samples = states.reshape(-1,cfg.d).detach()
+
+                if solver.eigf_loss not in ["cyclical"]:
                     (
+                        loss, 
+                        main_loss, 
+                        orth_loss,
+                        gs_fx,
+                        gs_Dfx
+                    ) = solver.gs_loss(
+                        verbose=verbose
+                    )
+                else:
+                    (
+                        loss, 
+                        pinn_loss,
+                        rel_loss,
+                        orth_loss,
+                        gs_fx,
+                        gs_Dfx
+                    ) = solver.gs_loss(
+                        verbose=verbose,
+                        itr = itr
+                    )
+                    
+                    main_loss = 1/2*pinn_loss.detach() + 1/2*rel_loss.detach()
+
+
+                logs['loss'][itr] = loss.detach()
+                logs['main_loss'][itr] = main_loss.detach()
+                logs['orth_loss'][itr] = orth_loss.detach()
+
+                loss.backward()
+
+                # gradient clipping for stability
+                torch.nn.utils.clip_grad_norm_(solver.neural_sde.eigf_gs_model.parameters(), 3.0)
+
+                gs_optimizer.step()
+                gs_optimizer.zero_grad()
+
+                es_loss = None
+
+                if cfg.eigf.k > 1 and eigval_converged:
+                    (
+                    es_loss, 
+                    es_main_loss, 
+                    es_orth_loss,
+                    fx,
+                    Dfx
+                    ) = solver.es_loss(
+                        gs_fx,
+                        gs_Dfx,
+                        verbose=verbose
+                    )
+
+                    logs['es_loss'][itr] = es_loss.detach()
+                    logs['es_main_loss'][itr] = es_main_loss.detach()
+                    logs['es_orth_loss'][itr] = es_orth_loss.detach()
+
+                    es_loss.backward()
+
+                    eigf_optimizer.step()
+                    eigf_optimizer.zero_grad()
+
+            elif cfg.method == "IDO":
+                (
                     loss,
                     log_weight_mean,
-                    weight_std,
-                    stop_indicators,
-                    ) = solver.loss(
-                        cfg.optim.batch_size,
-                        algorithm=algorithm,
-                        total_n_samples=cfg.method.n_samples_control,
-                        verbose=verbose,
-                        use_stopping_time=cfg.method.use_stopping_time,
-                        log_normalization_const=log_normalization_const,
-                        state0 = init_state
-                    )
-                    solver.ts = ts
-                    
-                    wandb_log['loss'] = loss.detach()
+                    weight_std
+                ) = solver.ido_loss(
+                    log_normalization_const,
+                    state0,
+                    verbose
+                )                    
                 
-                # Backward pass
-                if algorithm != "EFC" or cfg.arch.joint:
-                    loss.backward()
+                logs['loss'][itr] = loss.detach()
 
-                    optimizer.step()
-                    optimizer.zero_grad()
-                    if scheduler is not None:
-                        scheduler.step()
+                loss.backward()
 
-                    log_normalization_const = compute_EMA(
+                ido_optimizer.step()
+                ido_optimizer.zero_grad()
+
+                log_normalization_const = compute_EMA(
                         log_weight_mean.detach(),
                         log_normalization_const,
                         EMA_coeff=EMA_weight_mean_coeff,
                         itr=itr,
                     )
-
-                else:
-                    for i in range(loss.shape[0]):
-                        if not (cfg.method.adaptive_beta and solver.shift == 0 and i == 1):
-                            # backward pass on i-th loss function
-                            grads = torch.autograd.grad(loss[i], solver.neural_sde.eigf_models[i].parameters(), retain_graph=True)
-
-                            for param, grad in zip(solver.neural_sde.eigf_models[i].parameters(),grads):
-                                param.grad = grad
-
-                            if i == 0 and neural_sde.prior == "positive":
-                                torch.nn.utils.clip_grad_norm_(solver.neural_sde.eigf_models[i].parameters(), 10.0)
-                            
-                            optimizers[i].step()
-                            optimizers[i].zero_grad()
-                            
-                            if schedulers[i] is not None:
-                                schedulers[i].step()
                 
-                with torch.no_grad():
-                    end = time.time()
-                    time_per_iteration = end - start
+            elif cfg.method == "COMBINED":
+                if itr % cfg.solver.new_trajectory_every == 0:
+                    intermediate_state0, _,_,_ = stochastic_trajectories_final(
+                        neural_sde,
+                        state0,
+                        first_ts,
+                        cfg.lmbd,
+                        verbose=False
+                    )
 
-                    # if algorithm != "EFC":
-                    #     normalization_const = compute_EMA(
-                    #         weight_mean.detach(),
-                    #         normalization_const,
-                    #         EMA_coeff=EMA_weight_mean_coeff,
-                    #         itr=itr,
-                    #     )
+                solver.ts = ido_ts
+                solver.num_steps = len(ido_ts)-1
 
-                    training_info["time_per_iteration"].append(time_per_iteration)
-                    training_info["loss"].append(loss.detach())
-                    
-                    if itr % 100 == 0 and compute_L2_error:
-                        solver.eval()
+                (
+                    loss,
+                    log_weight_mean,
+                    weight_std
+                ) = solver.ido_loss(
+                    log_normalization_const,
+                    intermediate_state0,
+                    verbose
+                )                    
+                
+                logs['loss'][itr] = loss.detach()
 
-                        # if algorithm == "EFC":
-                        #     solver.compute_eigvals(beta=cfg.loss.beta)
+                loss.backward()
+
+                ido_optimizer.step()
+                ido_optimizer.zero_grad()
+
+                log_normalization_const = compute_EMA(
+                        log_weight_mean.detach(),
+                        log_normalization_const,
+                        EMA_coeff=EMA_weight_mean_coeff,
+                        itr=itr,
+                    )
+                
+                solver.ts = ts
+                solver.num_steps = len(ts)-1
+
+            if (cfg.solver.finetune or cfg.eigf.k > 1) and cfg.method == "EIGF" and not eigval_converged:
+                if itr % compute_eigval_every == 0:
+                    new_returns = stored_eigval / (prev_stored_eigval.abs() + 1e-2) * prev_stored_eigval.sign() - 1
+                    eigval_returns = compute_EMA(new_returns, eigval_returns, eigval_EMA_coeff, itr//compute_eigval_every)
+                    eigval_vol = compute_EMA(new_returns**2, eigval_vol, eigval_EMA_coeff, itr // compute_eigval_every) 
+
+                    prev_stored_eigval = stored_eigval.clone()
+                    stored_eigval = solver.neural_sde.eigvals[0]
+
+                    print(f'Iteration {itr} {cfg.run_name}: eigval {prev_stored_eigval.squeeze().detach():.3E} | returns {eigval_returns.detach().squeeze():.3E} | vol {eigval_vol.detach().squeeze():.3E}')
+                else:
+                    i = itr % compute_eigval_every
+                    stored_eigval = stored_eigval * i / (i+1) + solver.neural_sde.eigvals[0] / (i+1)
+                
+                if eigval_returns.abs() < 1e-2 and eigval_vol < 1e-2 and itr >= 500 and not eigval_converged:
+                    eigval_converged = True
+
+                    if cfg.solver.finetune:
+                        solver.neural_sde.eigvals[0] = prev_stored_eigval.detach()
+                        solver.eigf_loss = cfg.solver.eigf_loss
+
+                        print(f'First eigval converged, starting fine-tuning with lambda = {solver.neural_sde.eigvals[0].detach():.3E}.')
+                        solver.beta = 1 / solver.neural_sde.eigvals[0].detach().abs()
+                        gs_optimizer, eigf_optimizer, ido_optimizer = initialize_optimizers()
+
+                    else:
+                        solver.beta = 1 / solver.neural_sde.eigvals[0].detach().abs()
+                        print('First eigval converged, starting training of excited states.')
+
+                    # copy weights of gs model into es model
+                    # if cfg.eigf.k > 1:
+                    #     with torch.no_grad():
+                    #         for i in range(len(solver.neural_sde.eigf_gs_model.net) - 1):  # skip final layer
+                    #             for target_param, source_param in zip(solver.neural_sde.eigf_model.net[i].parameters(), solver.neural_sde.eigf_gs_model.net[i].parameters()):
+                    #                 target_param.copy_(source_param)
                             
-                        #     solver.neural_sde.compute_inner_prods(samples = solver.samples)
+                    #         source_last = solver.neural_sde.eigf_gs_model.net[-1][0]  # get nn.Linear
+                    #         target_last = solver.neural_sde.eigf_model.net[-1][0]  # get nn.Linear
 
+                    #         target_last.weight[:cfg.eigf.k-1].copy_(source_last.weight)
+                    #         target_last.bias[:cfg.eigf.k-1].copy_(source_last.bias)
+            
+            if cfg.eigf.k > 1 and cfg.method == "EIGF":
+                if itr % compute_eigval_every == 0:
+                    prev_stored_eigval_1 = stored_eigval_1.clone()
+                    stored_eigval_1 = solver.neural_sde.eigvals[1]
+                else:
+                    i = itr % compute_eigval_every
+                    stored_eigval_1 = stored_eigval_1 * i / (i+1) + solver.neural_sde.eigvals[1] / (i+1)
+
+            with torch.no_grad():
+                end = time.time()
+                logs['iteration_time'][itr] = end - start
+
+                if not cfg.timing:
+                    solver.eval()
+
+                    if itr % cfg.compute_objective_every == 0:
+                        objective_mean, objective_std = control_objective(
+                            neural_sde,
+                            x0,
+                            ts,
+                            cfg,
+                            65536,
+                            65536
+                        )
+                        logs['control_objective_mean'][itr] = objective_mean
+                        logs['control_objective_std'][itr] = objective_std
+                        print(f'Iteration {itr} {cfg.run_name}: objective {objective_mean:5.6E} pm {objective_std:5.6E}')
+
+                    if (optimal_sde is not None) and itr % cfg.compute_control_error_every == 0:
                         # use trajectories from ground truth control
                         neural_sde.use_learned_control = False
-                        neural_sde.u = ground_truth_control
                         (
                         states,
                         _,
                         _,
                         _,
                         _,
-                        _,
-                        _,
-                        _,
+                        target_control
                         ) = stochastic_trajectories(
                             neural_sde,
                             state0,
                             ts.to(state0),
-                            cfg.method.lmbd,
+                            cfg.lmbd,
                             detach=True)
-                        
                         neural_sde.use_learned_control = True
                         
-                        target_control = ground_truth_control(ts, states, t_is_tensor=True)
-                        
-                        # only evaluate in [0, eval_frac * T]
-                        eval_idx = int((cfg.method.eval_frac) * len(ts))
-                        states = states[:eval_idx,:,:]
-                        target_control = target_control[:eval_idx,:,:]
+                        t_eval = int(len(ts) * cfg.eval_frac)
+                        if t_eval == len(ts):
+                            t_eval = len(ts)-1
 
-                        learned_control = neural_sde.control(ts[:eval_idx],states)
+                        learned_control = neural_sde.control(ts[:t_eval],states[:t_eval]).detach()
+                        target_control = target_control[:t_eval]
+
                         norm_sqd_diff = torch.sum(
-                            (target_control - learned_control) ** 2
-                            / (target_control.shape[0] * target_control.shape[1])
-                        )
-                        print(f"{itr}: l2 error {norm_sqd_diff.detach():5.6E} | log_normalization_const {log_normalization_const.detach()}")
-                        norm_sqd_diff_single = None
-                        if algorithm == "EFC" and cfg.method.k > 1:
-                            learned_control = neural_sde.control(ts[:eval_idx],states,1)
-                            norm_sqd_diff_single = torch.sum(
                                 (target_control - learned_control) ** 2
                                 / (target_control.shape[0] * target_control.shape[1])
-                            )
-                            print(f"{itr}: l2 error {norm_sqd_diff.detach():5.6E}")
-                                                    
-
-                    if compute_L2_error:
-                        training_info["norm_sqd_diff"].append(norm_sqd_diff.detach())
-                        wandb_log['l2_error'] = norm_sqd_diff.detach()
-
-                        if norm_sqd_diff_single is not None:
-                            training_info["norm_sqd_diff_single"].append(norm_sqd_diff_single.detach())
-                            wandb_log['l2_error_single'] = norm_sqd_diff_single.detach()
-
-                    if algorithm=="EFC":
-                        if itr % 100 == 0 and compute_eigen_error: 
-                            x = solver.samples
-
-                            exact_fx = exact_eigfunctions(x, 2, neural_sde, cfg, return_grad=False).cpu()
-
-                            fx = solver.neural_sde.eigf_models[0](x).detach().cpu().squeeze(1)
-                            if neural_sde.prior == 'positive':
-                                fx = (-fx).exp()
-                            
-                            norm = torch.mean(fx**2).sqrt().detach().cpu()
-                            
-                            eigf_sq_diff = torch.mean((exact_fx[:,0]-fx/norm)**2)
-                            neg_eigf_sq_diff = torch.mean((exact_fx[:,0]+fx/norm)**2)
-                            exact_sq_sum = torch.mean(exact_fx[:,0]**2)
-
-                            l2_err = min(eigf_sq_diff,neg_eigf_sq_diff) / exact_sq_sum
-                            wandb_log['eigf_l2_error_0'] = l2_err
-                            
-                            fx = solver.neural_sde.eigf_models[1](x).detach().cpu().squeeze(1)
-                            norm = torch.mean(fx**2).sqrt().detach().cpu()
-                            
-                            eigf_sq_diff = torch.mean((exact_fx[:,1]-fx/norm)**2)
-                            neg_eigf_sq_diff = torch.mean((exact_fx[:,1]+fx/norm)**2)
-                            exact_sq_sum = torch.mean(exact_fx[:,1]**2)
-
-                            l2_err = min(eigf_sq_diff,neg_eigf_sq_diff) / exact_sq_sum
-                            wandb_log['eigf_l2_error_1'] = l2_err
-
-                            wandb_log['beta'] = solver.beta
-
-                            print(f'Itr {itr+1}: error {wandb_log['eigf_l2_error_0']}, eigvals {solver.neural_sde.eigvals}')
-                        
-                        wandb_log['lambda_0'] = solver.neural_sde.eigvals[0]
-                        wandb_log['stored_eigval'] = solver.stored_eigval
-                        wandb_log['eigval_returns'] = solver.eigval_returns
-                        wandb_log['eigval_vol'] = solver.eigval_vol
-
-                    if algorithm == "moment" and itr == 5000:
-                        current_lr = optimizer.param_groups[-1]["lr"]
-                        optimizer.param_groups[-1]["lr"] = 1e-4
-                        new_lr = optimizer.param_groups[-1]["lr"]
-                        print(f"current_lr: {current_lr}, new_lr: {new_lr}")
-                    
-                    if (
-                        itr % cfg.method.compute_control_objective_every
-                        == cfg.method.compute_control_objective_every - 1
-                        or itr == cfg.method.num_iterations - 1
-                        or itr == 0
-                    ):
-                        torch.save(solver.state_dict(), experiment_path + f'/solver_weights_{itr+1:_}.pth')
-                        
-                        objective_mean, objective_std = control_objective(neural_sde, x0, ts, cfg.method.lmbd, 4096, total_n_samples=cfg.method.objective_samples)
-
-                        wandb_log['objective_mean'] = objective_mean.detach()
-
-                        training_info["control_objective_mean"].append(
-                            objective_mean.detach()
                         )
-                        training_info["control_objective_std_err"].append(
-                            objective_std.detach()
-                        )
-                        training_info["control_objective_itr"].append(itr + 1)
+                        logs['control_l2_error'][itr] = norm_sqd_diff
+                        print(f'Iteration {itr} {cfg.run_name}: control l2 error {norm_sqd_diff:5.6E}')
 
-                        with open(experiment_path + '/training_info.pkl', 'wb') as f:
-                            pickle.dump(training_info,f)
-                        print(f'Iteration {itr+1} objective: {objective_mean.detach()}')
-                    wandb.log(wandb_log)
+                    if cfg.method == "EIGF" and cfg.setting[:2] == "OU" and itr % cfg.log_every == 0:
+                        x = solver.samples.detach()
 
+                        exact_fx = solver.neural_sde.exact_eigfunctions(x, 1).cpu()
+                        exact_grad_log_x = solver.neural_sde.exact_grad_log_gs(x).cpu()
+                        
 
-    cleanup()  # Cleanup process group after training
-    wandb.finish()
+                        if solver.neural_sde.confining:
+                            predicted_fx = gs_fx.exp().detach().cpu()
+                        else:
+                            Ex = solver.neural_sde.energy(x).detach() * 2 / solver.neural_sde.lmbd
+                            predicted_fx = (gs_fx + Ex[:,None]).exp().detach().cpu()
+
+                        predicted_grad_log_fx = gs_Dfx.detach().cpu()
+
+                        #predicted_fx_norm = torch.mean(predicted_fx**2).sqrt()
+                        if solver.neural_sde.confining:
+                            l2_err = torch.mean((exact_fx - predicted_fx)**2)
+                        else:
+                            l2_err = torch.logsumexp(((exact_fx - predicted_fx)**2).log() - 2*Ex[:,None].cpu(),dim=0).exp().squeeze() / exact_fx.shape[0]
+                        
+                        logs['eigf_error'][itr] = l2_err
+
+                        l2_err_grad_log = torch.mean((exact_grad_log_x - predicted_grad_log_fx.squeeze(1))**2).sum(dim=-1).mean()
+
+                        logs['grad_log_eigf_error'][itr] = l2_err_grad_log
+
+                        eigval_error = (exact_eigvals[0] - solver.neural_sde.eigvals[0])**2
+                        print(f'Iteration {itr} {cfg.run_name} [GROUND STATE]: error {l2_err:.3E} | gradlog error {l2_err_grad_log.detach().squeeze():.3E} | loss {loss.detach().squeeze():.3E} | orth loss {orth_loss.detach().squeeze():.3E}')
+                        
+                        if cfg.eigf.k > 1 and es_loss is not None:
+                            print(f'Iteration {itr} {cfg.run_name} [EXCITED STATE]: loss {es_loss.detach().squeeze():.3E} | orth loss {es_orth_loss.detach().squeeze():.3E} | stored eigval 1 {prev_stored_eigval_1}')
+                
+                    if (itr % cfg.save_model_every == 0):
+                        if cfg.eigf.k > 1 and cfg.method == "EIGF":
+                            solver.neural_sde.eigvals[1] = prev_stored_eigval_1
+                        torch.save(solver.state_dict(), experiment_path + f'/solver_weights_{itr:_}.pth')
+                        torch.save(solver.neural_sde.state_dict(), experiment_path + f'/neural_sde_weights.pth')
+
+                if itr % cfg.log_every == 0:
+                        df = pd.DataFrame(logs)
+                        df.to_csv(experiment_path + f'/logs.csv',index=False)
+    cleanup()
+
+# logic for expanding passed cfg parameters to allow multiple runs in parallel
+def flatten_cfg(cfg, prefix=""):
+    """
+    Recursively flatten a plain dictionary.
+    """
+    flat = {}
+    for k, v in cfg.items():
+        full_key = f"{prefix}.{k}" if prefix else k
+        if isinstance(v, dict):
+            flat.update(flatten_cfg(v, full_key))
+        else:
+            flat[full_key] = v
+    return flat
+
+def set_nested(cfg, key_path, value):
+    """
+    Set a value in a nested dictionary given a dot-separated key path.
+    """
+    keys = key_path.split(".")
+    d = cfg
+    for k in keys[:-1]:
+        if k not in d:
+            d[k] = {}
+        d = d[k]
+    d[keys[-1]] = value
+
+def expand_cfg(cfg):
+    """
+    Expand a config by detecting list-valued keys, verifying that all such
+    lists have the same length, and creating a separate OmegaConf config for
+    each index.
+    """
+    # Convert cfg to a plain dict with all interpolations resolved.
+    cfg_dict = OmegaConf.to_container(cfg, resolve=True)
+    
+    # Flatten the plain dictionary.
+    flat = flatten_cfg(cfg_dict)
+    
+    # Identify keys with list values.
+    list_keys = [k for k, v in flat.items() if isinstance(v, list)]
+    
+    # If no list-valued keys, return the original cfg.
+    if not list_keys:
+        return [cfg]
+    
+    # Ensure that all list-valued keys have the same length.
+    list_lengths = [len(flat[k]) for k in list_keys]
+    if len(set(list_lengths)) != 1:
+        raise ValueError("All list-valued arguments must have the same length.")
+    
+    num_configs = list_lengths[0]
+    expanded_cfgs = []
+    
+    # For each index, create a new config where list values are replaced by their corresponding element.
+    for i in range(num_configs):
+        new_cfg = {}
+        for k, v in flat.items():
+            if k in list_keys:
+                set_nested(new_cfg, k, v[i])
+            else:
+                set_nested(new_cfg, k, v)
+        expanded_cfgs.append(OmegaConf.create(new_cfg))
+        
+    return expanded_cfgs
 
 if __name__ == "__main__":
     torch.multiprocessing.set_start_method("spawn", force=True)
-    args_cfg = OmegaConf.from_cli()
+    cli_cfg = OmegaConf.from_cli()
 
-    algorithms = args_cfg.algorithms
-    gpus = args_cfg.gpus
-    world_size = min(len(algorithms),torch.cuda.device_count())
-    mp.spawn(main, args=(world_size,algorithms,gpus,args_cfg), nprocs=world_size, join=True)
+    args_cfgs = expand_cfg(cli_cfg)
+    world_size = min(len(args_cfgs),torch.cuda.device_count())
+
+    mp.spawn(main, args=(world_size,args_cfgs), nprocs=world_size, join=True)
