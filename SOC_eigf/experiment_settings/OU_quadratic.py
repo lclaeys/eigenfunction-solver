@@ -1,8 +1,9 @@
 """
 
-Model set up for quadratic case. Base code adapted from https://github.com/facebookresearch/SOC-matching.
+Model set up quadratic setting. Base code adapted from https://github.com/facebookresearch/SOC-matching.
 
 Adapted to fit in our framework, and added exact solution for eigenfunctions of symmetric OU operator.
+Note: this implementation uses the probabilist's Hermite polynomials, NOT physicist's.
 
 """
 

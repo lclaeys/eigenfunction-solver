@@ -1,6 +1,6 @@
 """
 
-Main script for running experiments. Once again, structure is adapted from main.py in https://github.com/facebookresearch/SOC-matching.
+Main script for running experiments. Structure is adapted from main.py in https://github.com/facebookresearch/SOC-matching.
 
 """
 import os
@@ -241,11 +241,7 @@ def main(rank, world_size, args_cfgs):
     logs = {var: np.full(cfg.num_iterations,np.nan) for var in logged_variables}
 
     EMA_weight_mean_coeff = 0.002
-    EMA_loss_coeff = 0.05
 
-    rel_loss_norm=1.0
-    pinn_loss_norm=1.0
-    
     # diagnostic to assess convergence and smoothen eigenvalue computation
     if cfg.eigf.k > 1 or cfg.solver.finetune:
         eigval_returns = 0.0
@@ -271,38 +267,18 @@ def main(rank, world_size, args_cfgs):
             logs["itr"][itr] = itr
 
             if cfg.method == "EIGF":
-                
-                if cfg.solver.trajectory_loss==False:
-                    solver.update_samples(verbose)
-                else:
-                    states, _, _, _, _, _ = stochastic_trajectories(neural_sde, state0, ts, cfg.lmbd, detach=True)
-                    solver.samples = states.reshape(-1,cfg.d).detach()
+                                
+                solver.update_samples(verbose)
 
-                if solver.eigf_loss not in ["cyclical"]:
-                    (
-                        loss, 
-                        main_loss, 
-                        orth_loss,
-                        gs_fx,
-                        gs_Dfx
-                    ) = solver.gs_loss(
-                        verbose=verbose
-                    )
-                else:
-                    (
-                        loss, 
-                        pinn_loss,
-                        rel_loss,
-                        orth_loss,
-                        gs_fx,
-                        gs_Dfx
-                    ) = solver.gs_loss(
-                        verbose=verbose,
-                        itr = itr
-                    )
-                    
-                    main_loss = 1/2*pinn_loss.detach() + 1/2*rel_loss.detach()
-
+                (
+                    loss, 
+                    main_loss, 
+                    orth_loss,
+                    gs_fx,
+                    gs_Dfx
+                ) = solver.gs_loss(
+                    verbose=verbose
+                )
 
                 logs['loss'][itr] = loss.detach()
                 logs['main_loss'][itr] = main_loss.detach()
@@ -405,6 +381,7 @@ def main(rank, world_size, args_cfgs):
                 solver.ts = ts
                 solver.num_steps = len(ts)-1
 
+            # logic for checking whether ground state eigenvalue has converged
             if (cfg.solver.finetune or cfg.eigf.k > 1) and cfg.method == "EIGF" and not eigval_converged:
                 if itr % compute_eigval_every == 0:
                     new_returns = stored_eigval / (prev_stored_eigval.abs() + 1e-2) * prev_stored_eigval.sign() - 1
@@ -433,19 +410,6 @@ def main(rank, world_size, args_cfgs):
                     else:
                         solver.beta = 1 / solver.neural_sde.eigvals[0].detach().abs()
                         print('First eigval converged, starting training of excited states.')
-
-                    # copy weights of gs model into es model
-                    # if cfg.eigf.k > 1:
-                    #     with torch.no_grad():
-                    #         for i in range(len(solver.neural_sde.eigf_gs_model.net) - 1):  # skip final layer
-                    #             for target_param, source_param in zip(solver.neural_sde.eigf_model.net[i].parameters(), solver.neural_sde.eigf_gs_model.net[i].parameters()):
-                    #                 target_param.copy_(source_param)
-                            
-                    #         source_last = solver.neural_sde.eigf_gs_model.net[-1][0]  # get nn.Linear
-                    #         target_last = solver.neural_sde.eigf_model.net[-1][0]  # get nn.Linear
-
-                    #         target_last.weight[:cfg.eigf.k-1].copy_(source_last.weight)
-                    #         target_last.bias[:cfg.eigf.k-1].copy_(source_last.bias)
             
             if cfg.eigf.k > 1 and cfg.method == "EIGF":
                 if itr % compute_eigval_every == 0:
@@ -522,7 +486,6 @@ def main(rank, world_size, args_cfgs):
 
                         predicted_grad_log_fx = gs_Dfx.detach().cpu()
 
-                        #predicted_fx_norm = torch.mean(predicted_fx**2).sqrt()
                         if solver.neural_sde.confining:
                             l2_err = torch.mean((exact_fx - predicted_fx)**2)
                         else:
@@ -534,7 +497,6 @@ def main(rank, world_size, args_cfgs):
 
                         logs['grad_log_eigf_error'][itr] = l2_err_grad_log
 
-                        eigval_error = (exact_eigvals[0] - solver.neural_sde.eigvals[0])**2
                         print(f'Iteration {itr} {cfg.run_name} [GROUND STATE]: error {l2_err:.3E} | gradlog error {l2_err_grad_log.detach().squeeze():.3E} | loss {loss.detach().squeeze():.3E} | orth loss {orth_loss.detach().squeeze():.3E}')
                         
                         if cfg.eigf.k > 1 and es_loss is not None:
@@ -551,7 +513,7 @@ def main(rank, world_size, args_cfgs):
                         df.to_csv(experiment_path + f'/logs.csv',index=False)
     cleanup()
 
-# logic for expanding passed cfg parameters to allow multiple runs in parallel
+# expanding passed cfg parameters to allow multiple runs in parallel
 def flatten_cfg(cfg, prefix=""):
     """
     Recursively flatten a plain dictionary.

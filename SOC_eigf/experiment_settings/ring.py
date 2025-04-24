@@ -1,6 +1,6 @@
 """
 
-Model set up for ring setting.
+Model setup for ring setting.
 
 """
 import torch

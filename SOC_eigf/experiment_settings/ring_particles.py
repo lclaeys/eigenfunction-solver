@@ -1,8 +1,8 @@
-# Copyright (c) Meta Platforms, Inc. and affiliates.
-# All rights reserved.
-#
-# This source code is licensed under the license found in the
-# LICENSE file in the root directory.
+"""
+
+Model setup for ring particles setting.
+
+"""
 import torch
 
 from SOC_eigf.method import NeuralSDE

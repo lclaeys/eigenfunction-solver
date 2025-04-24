@@ -1,6 +1,8 @@
 """
 
-Model set up for double well setting.
+Model setup for double well setting. Base code adapted from https://github.com/facebookresearch/SOC-matching.
+
+Adapted to fit in our framework, and added finite difference discretization for running cost.
 
 """
 import torch
