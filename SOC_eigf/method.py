@@ -10,7 +10,7 @@ import numpy as np
 import nvidia_smi
 import functorch
 
-from SOC_eigf.models import FullyConnectedUNet, FullyConnectedUNet2, SIREN, GaussianNet, SigmoidMLP, GELUNET, SIRENUNET, GaussUNET
+from SOC_eigf.models import FullyConnectedUNet, FullyConnectedUNet2, SIREN, GaussianNet, SigmoidMLP, GELUNET, SIRENUNET, GaussUNET, GenericNetFactory
 from SOC_eigf.utils import mala_samples, stochastic_trajectories, compute_EMA
 
 class NeuralSDE(nn.Module):
@@ -104,7 +104,10 @@ class NeuralSDE(nn.Module):
                            'GAUSS': GaussianNet, 
                            'GELUNET': GELUNET, 
                            'SIRENUNET': SIRENUNET, 
-                           'GaussUNET': GaussUNET}
+                           'GaussUNET': GaussUNET,
+                           'RELU': GenericNetFactory(activation=nn.ReLU),
+                           'TANH': GenericNetFactory(activation=nn.Tanh),
+                           'GELU': GenericNetFactory(activation=nn.GELU)}
 
         if self.method in ['EIGF', 'COMBINED']:
             # ground state model
@@ -410,7 +413,7 @@ class SOC_Solver(nn.Module):
         Dfx, fx = self.neural_sde.eigf_gs_model_jac(self.samples)
 
         sq_f_norm = (torch.logsumexp(fx[:,None,:] + fx[:,:,None], dim = 0).exp() / fx.shape[0]).clip(min=1e-4)
-        orth_loss = (sq_f_norm - 1)**2
+        orth_loss = sq_f_norm.log()**2
         
         # if (orth_loss - 1.0).abs() < 0.1:
         #     reg_loss = (Dfx**2).mean() / (fx**2).mean()
@@ -582,7 +585,7 @@ class SOC_Solver(nn.Module):
             detach=detach,
         )
 
-        log_weight = log_path_weight_deterministic + log_path_weight_stochastic + log_terminal_weight
+        log_weight = log_path_weight_deterministic + log_path_weight_stochastic + log_terminal_weight - log_normalization_const
         weight = torch.exp(log_weight)
 
         if algorithm == "rel_entropy":
@@ -1015,6 +1018,31 @@ class SOC_Solver(nn.Module):
                 )
             elif algorithm == "moment":
                 objective = torch.mean(sum_terms**2 * weight_2)
+        
+        if algorithm == "adjoint_matching":            
+            detached_states = states.detach()
+            nabla_f_evals = self.neural_sde.nabla_f(self.ts, detached_states)
+            nabla_b_evals = self.neural_sde.nabla_b(self.ts, detached_states)
+            nabla_g_evals = self.neural_sde.nabla_g(detached_states[-1, :, :])
+
+            a_vectors = torch.zeros_like(states)
+            a = nabla_g_evals
+            a_vectors[-1, :, :] = a
+
+            for k in range(1,len(self.ts)):
+                a += self.dt * ((nabla_f_evals[-1-k, :, :] + nabla_f_evals[-k, :, :]) / 2 + torch.einsum("mkl,ml->mk", (nabla_b_evals[-1-k, :, :, :] + nabla_b_evals[-k, :, :, :]) / 2, a))
+                a_vectors[-1-k, :, :] = a
+
+            control_learned = self.control(self.ts, states)
+            control_target = -torch.einsum(
+                "ij,...j->...i",
+                torch.transpose(self.sigma, 0, 1),
+                a_vectors,
+            )
+
+            objective = torch.sum(
+                (control_learned - control_target) ** 2
+            ) / (states.shape[0] * states.shape[1])
 
         if verbose:
             # To print amount of memory used in GPU
@@ -1029,6 +1057,6 @@ class SOC_Solver(nn.Module):
 
         return (
             objective,
-            torch.logsumexp(log_weight, dim=0) - np.log(log_weight.shape[0]),
+            torch.logsumexp(log_weight + log_normalization_const, dim=0) - np.log(log_weight.shape[0]),
             torch.std(weight),
         )

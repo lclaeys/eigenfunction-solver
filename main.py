@@ -88,7 +88,7 @@ def main(rank, world_size, args_cfgs):
 
     if cfg.method == "COMBINED":
         try:
-            checkpoint = torch.load(experiment_folder + f'/EIGF/{cfg.trained_eigf_run_name}/neural_sde_weights.pth')
+            checkpoint = torch.load(experiment_folder + f'/EIGF/{cfg.trained_eigf_run_name}/neural_sde_weights.pth',map_location=cfg.device)
         except FileNotFoundError as e:
             print('Error: Please train EIGF model before attempting to train combined model!')
             raise e
@@ -259,6 +259,7 @@ def main(rank, world_size, args_cfgs):
         eigval_converged = False
         if cfg.solver.finetune:
             solver.eigf_loss = 'ritz'
+        ritz_steps = cfg.solver.get('ritz_steps',5000)
 
     with torch.enable_grad():
         if not cfg.timing:
@@ -419,7 +420,7 @@ def main(rank, world_size, args_cfgs):
                     i = itr % compute_eigval_every
                     stored_eigval = stored_eigval * i / (i+1) + solver.neural_sde.eigvals[0] / (i+1)
                 
-                if eigval_returns.abs() < 1e-2 and eigval_vol < 1e-2 and itr >= 500 and not eigval_converged:
+                if eigval_returns.abs() < 1e-2 and eigval_vol < 1e-2 and itr >= ritz_steps and not eigval_converged:
                     eigval_converged = True
 
                     if cfg.solver.finetune:

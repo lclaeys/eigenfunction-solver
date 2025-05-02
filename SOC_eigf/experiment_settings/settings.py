@@ -15,7 +15,6 @@ from SOC_eigf.experiment_settings.OU_quadratic import OU_Quadratic
 from SOC_eigf.experiment_settings.ring import Ring
 from SOC_eigf.experiment_settings.ring_particles import RingParticles
 from SOC_eigf.experiment_settings.double_well import DoubleWell
-from SOC_eigf.experiment_settings.double_well_hard import DoubleWellHard
 
 
 def ground_truth_control(cfg, ts, x0, **kwargs):
@@ -55,20 +54,6 @@ def ground_truth_control(cfg, ts, x0, **kwargs):
     elif cfg.setting == "double_well" or cfg.setting == "double_well_hard":
         if cfg.setting == "double_well":
             optimal_sde = DoubleWell(
-                device=cfg.device,
-                u=None,
-                dim=cfg.d,
-                lmbd=cfg.lmbd,
-                kappa=kwargs["kappa"],
-                nu=kwargs["nu"],
-                sigma=kwargs["sigma"],
-                T=cfg.T,
-                method=cfg.method,
-                eigf_cfg=cfg.eigf,
-                ido_cfg=cfg.ido
-            )
-        else:
-            optimal_sde = DoubleWellHard(
                 device=cfg.device,
                 u=None,
                 dim=cfg.d,
