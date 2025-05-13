@@ -39,10 +39,10 @@ class NeuralSDE(nn.Module):
         T=1.0,
         method="EIGF",
         eigf_cfg=None,
-        ido_cfg=None
+        ido_cfg=None,
     ):
         super().__init__()
-        assert method in ['EIGF','IDO','COMBINED']
+        assert method in ['EIGF','IDO','COMBINED','FBSDE']
         self.device = device
         self.u = u
         self.dim = dim
@@ -68,6 +68,7 @@ class NeuralSDE(nn.Module):
         self.use_eigval = ido_cfg.get('use_eigval', True)
 
         self.eigval_diff = None
+        
 
     def control(self, t, x, verbose=False):
         if verbose:
@@ -216,6 +217,14 @@ class NeuralSDE(nn.Module):
                 gamma=self.gamma,
                 scaling_factor=self.scaling_factor_M,
             ).to(self.device)
+
+        elif self.method=="FBSDE":
+            self.fbsde_model = FullyConnectedUNet(
+                dim_in=self.dim+1,
+                dim_out=self.dim,
+                hdims=self.hdims_ido,
+                scaling_factor=self.scaling_factor_nabla_V,
+            ).to(self.device)
         
     def nabla_V(self,t,x):
         """
@@ -233,7 +242,7 @@ class NeuralSDE(nn.Module):
 
             # Determine indices that use IDO model (after T-T_cutoff)
             if len(t.shape) >= 1:
-                ido_idx = torch.searchsorted(t,self.T - self.T_cutoff) - 1 # find cutoff index
+                ido_idx = torch.clamp(torch.searchsorted(t,self.T - self.T_cutoff),min=1)-1 # find cutoff index
                 ido_t = t[ido_idx:]
                 ido_x = x[ido_idx:]
                 ido_t_rev = self.T - ido_t
@@ -257,6 +266,14 @@ class NeuralSDE(nn.Module):
                 t_expand = t.reshape(-1, 1).expand(x.shape[0], 1)
                 tx = torch.cat([t_expand, x], dim=-1)
                 out = self.ido_model(tx).reshape(x.shape)
+
+                return out
+
+            elif self.method == "FBSDE":
+                x = x.reshape(-1, self.dim)
+                t_expand = t.reshape(-1, 1).expand(x.shape[0], 1)
+                tx = torch.cat([t_expand, x], dim=-1)
+                out = self.fbsde_model(tx).reshape(x.shape)
 
                 return out
             
@@ -290,6 +307,16 @@ class NeuralSDE(nn.Module):
                 tx_reshape = torch.reshape(tx, (-1, tx.shape[2]))
 
                 out = self.ido_model(tx_reshape)
+                reshaped_out = torch.reshape(out, x.shape)
+
+                return reshaped_out
+            
+            elif self.method == "FBSDE":
+                ts_repeat = t.unsqueeze(1).unsqueeze(2).repeat(1, x.shape[1], 1)
+                tx = torch.cat([ts_repeat, x], dim=-1)
+                tx_reshape = torch.reshape(tx, (-1, tx.shape[2]))
+
+                out = self.fbsde_model(tx_reshape)
                 reshaped_out = torch.reshape(out, x.shape)
 
                 return reshaped_out
@@ -410,10 +437,17 @@ class SOC_Solver(nn.Module):
             Ex = self.neural_sde.energy(self.samples)
             log_importance_weight = -2 * Ex * 2 / self.lmbd
 
-        Dfx, fx = self.neural_sde.eigf_gs_model_jac(self.samples)
+        if self.eigf_loss not in ['rel','pinn']:
+            Dfx, fx = self.neural_sde.eigf_gs_model_jac(self.samples)
+        else:
+            Dfx, fx = self.neural_sde.eigf_gs_model_jac(self.samples)
 
         sq_f_norm = (torch.logsumexp(fx[:,None,:] + fx[:,:,None], dim = 0).exp() / fx.shape[0]).clip(min=1e-4)
-        orth_loss = sq_f_norm.log()**2
+        
+        if self.eigf_loss == 'var':
+            orth_loss = (1-sq_f_norm)**2
+        else:
+            orth_loss = sq_f_norm.log()**2
         
         # if (orth_loss - 1.0).abs() < 0.1:
         #     reg_loss = (Dfx**2).mean() / (fx**2).mean()
@@ -470,7 +504,7 @@ class SOC_Solver(nn.Module):
 
             if self.eigf_loss == 'rel':
                 sq_diff = ((Lfx - self.neural_sde.eigvals[0])**2).clip(min=1e-8)
-                rel_loss = torch.logsumexp(sq_diff.log() + log_importance_weight[:,None],dim=0).exp() / fx.shape[0]
+                rel_loss = torch.logsumexp(sq_diff.log(),dim=0).exp() / fx.shape[0]
 
                 return (
                     rel_loss + orth_loss,
@@ -495,7 +529,7 @@ class SOC_Solver(nn.Module):
             elif self.eigf_loss == "log_rel":
                 ratio = (Lfx / self.neural_sde.eigvals[0]).clip(min=1e-6, max = 1e6)
                 sq_diff = (ratio.log()**2).clip(min=1e-8)
-                log_rel_loss = torch.logsumexp(sq_diff.log() + log_importance_weight[:,None],dim=0).exp() / fx.shape[0]
+                log_rel_loss = torch.logsumexp(sq_diff.log(),dim=0).exp() / fx.shape[0]
 
                 return (
                     log_rel_loss + orth_loss,
@@ -1033,7 +1067,7 @@ class SOC_Solver(nn.Module):
                 a += self.dt * ((nabla_f_evals[-1-k, :, :] + nabla_f_evals[-k, :, :]) / 2 + torch.einsum("mkl,ml->mk", (nabla_b_evals[-1-k, :, :, :] + nabla_b_evals[-k, :, :, :]) / 2, a))
                 a_vectors[-1-k, :, :] = a
 
-            control_learned = self.control(self.ts, states)
+            control_learned = self.control(self.ts, detached_states)
             control_target = -torch.einsum(
                 "ij,...j->...i",
                 torch.transpose(self.sigma, 0, 1),
@@ -1060,3 +1094,75 @@ class SOC_Solver(nn.Module):
             torch.logsumexp(log_weight + log_normalization_const, dim=0) - np.log(log_weight.shape[0]),
             torch.std(weight),
         )
+
+    def fbsde_loss(
+        self,
+        reg = 1.0,
+        state0=None,
+        verbose = False,
+        ):
+
+        device   = self.x0.device
+        N   = self.ts.shape[0] - 1
+        dts = self.ts[1:] - self.ts[:-1]
+        sqrt_dts = dts.sqrt()
+        Mbatch = state0.shape[0] // 2
+
+        (states, noises,
+        _det, _sto, _ter,
+        Z_all) = stochastic_trajectories(
+            self.neural_sde,
+            state0,
+            self.ts.to(device),
+            self.lmbd,
+            detach=False,
+        )
+
+        noises = noises * sqrt_dts[:,None,None]
+        
+        X_N     = states[-1]                 # (B, d)
+        g_X_N   = self.neural_sde.g(X_N)     # (B,)
+
+        # driver f(t_n, X_n, Z_n) for all n
+        f_all = self.neural_sde.f(self.ts, states)[:-1] + 1/2 * Z_all.norm(dim=-1)**2    # (N, B)
+
+        # < Z_n , ΔW_n >
+        z_dot_dw = (Z_all * noises).sum(-1)                # (N, B)
+
+        # ∫ f h  and  Σ ⟨Z,ΔW⟩
+        int_fh     = (f_all * dts.unsqueeze(1)).sum(0)           # (B,)
+        sum_z_dw   = z_dot_dw.sum(0)                            # (B,)
+
+        # ------------------------------------------------------------------
+        # 2) split into mean-batch (m=0…Mbatch-1) and var-batch (m=Mbatch…)
+        # ------------------------------------------------------------------
+        # ----  first half : compute stochastic costs -------------
+
+        Y0_first  = g_X_N[:Mbatch] + int_fh[:Mbatch] - sum_z_dw[:Mbatch]               # (B,)
+
+        # ----  second half : propagate from the *mean* -----------
+        Y0_init = g_X_N[:Mbatch].mean()                         # scalar (keeps grad)
+
+        # paths for second half
+        f_2    = f_all[:, Mbatch:]            # (N, Mbatch)
+        z_dw_2 = z_dot_dw[:, Mbatch:]         # (N, Mbatch)
+        g_2    = g_X_N[Mbatch:]               # (Mbatch,)
+
+        # Y_N for second half: Y_N = mean_Y0 - Σ fΔt + Σ⟨Z,ΔW⟩
+        Y_N_2  = Y0_init - (f_2 * dts.unsqueeze(1)).sum(0) + z_dw_2.sum(0)
+
+        term_error_sq = (g_2 - Y_N_2).pow(2)                   # (Mbatch,)
+
+        # ------------------------------------------------------------------
+        # 3) robust FBSDE loss  L = 1/Mbatch ( Σ Y0_first  + λ Σ |g - Y_N|² )
+        # ------------------------------------------------------------------
+        loss = (Y0_first.sum() + reg * term_error_sq.sum()) / Mbatch
+
+        if verbose:
+            print(
+                f"[FBSDE]  E[Y0] = {Y0_first.mean().item(): .4e}   "
+                f"Var term = {(term_error_sq.mean()).item(): .4e}   "
+                f"loss = {loss.item(): .4e}"
+            )
+
+        return loss

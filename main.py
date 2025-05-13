@@ -142,6 +142,7 @@ def main(rank, world_size, args_cfgs):
         gs_optimizer = None
         eigf_optimizer = None
         ido_optimizer = None
+        fbsde_optimizer = None
 
         if cfg.method=="EIGF":
             gs_optimizer = optim.Adam(params=solver.neural_sde.eigf_gs_model.parameters(),
@@ -197,9 +198,14 @@ def main(rank, world_size, args_cfgs):
 
             ido_optimizer.zero_grad()
 
-        return gs_optimizer, eigf_optimizer, ido_optimizer
+        elif cfg.method == 'FBSDE':
+            fbsde_optimizer = torch.optim.Adam(
+                    solver.neural_sde.fbsde_model.parameters(), lr=cfg.optim.fbsde_lr, eps=cfg.optim.adam_eps
+                )
+
+        return gs_optimizer, eigf_optimizer, ido_optimizer, fbsde_optimizer
         
-    gs_optimizer, eigf_optimizer, ido_optimizer = initialize_optimizers()
+    gs_optimizer, eigf_optimizer, ido_optimizer, fbsde_optimizer = initialize_optimizers()
 
 
     logged_variables=[
@@ -279,31 +285,15 @@ def main(rank, world_size, args_cfgs):
                     states, _, _, _, _, _ = stochastic_trajectories(neural_sde, state0, ts, cfg.lmbd, detach=True)
                     solver.samples = states.reshape(-1,cfg.d).detach()
 
-                if solver.eigf_loss not in ["cyclical"]:
-                    (
-                        loss, 
-                        main_loss, 
-                        orth_loss,
-                        gs_fx,
-                        gs_Dfx
-                    ) = solver.gs_loss(
-                        verbose=verbose
-                    )
-                else:
-                    (
-                        loss, 
-                        pinn_loss,
-                        rel_loss,
-                        orth_loss,
-                        gs_fx,
-                        gs_Dfx
-                    ) = solver.gs_loss(
-                        verbose=verbose,
-                        itr = itr
-                    )
-                    
-                    main_loss = 1/2*pinn_loss.detach() + 1/2*rel_loss.detach()
-
+                (
+                    loss, 
+                    main_loss, 
+                    orth_loss,
+                    gs_fx,
+                    gs_Dfx
+                ) = solver.gs_loss(
+                    verbose=verbose
+                )
 
                 logs['loss'][itr] = loss.detach()
                 logs['main_loss'][itr] = main_loss.detach()
@@ -405,6 +395,21 @@ def main(rank, world_size, args_cfgs):
                 
                 solver.ts = ts
                 solver.num_steps = len(ts)-1
+            elif cfg.method == "FBSDE":
+                (
+                    loss
+                ) = solver.fbsde_loss(
+                    reg=cfg.solver.get('fbsde_reg', 1.0),
+                    state0=state0,
+                    verbose=verbose
+                )                       
+                
+                logs['loss'][itr] = loss.detach()
+
+                loss.backward()
+
+                fbsde_optimizer.step()
+                fbsde_optimizer.zero_grad()
 
             if (cfg.solver.finetune or cfg.eigf.k > 1) and cfg.method == "EIGF" and not eigval_converged:
                 if itr % compute_eigval_every == 0:
@@ -420,7 +425,7 @@ def main(rank, world_size, args_cfgs):
                     i = itr % compute_eigval_every
                     stored_eigval = stored_eigval * i / (i+1) + solver.neural_sde.eigvals[0] / (i+1)
                 
-                if eigval_returns.abs() < 1e-2 and eigval_vol < 1e-2 and itr >= ritz_steps and not eigval_converged:
+                if (eigval_returns.abs() < 1e-2 and eigval_vol < 1e-2 and itr >= ritz_steps) or (itr >= ritz_steps and cfg.get('use_exact_eigvals',False)) and not eigval_converged:
                     eigval_converged = True
 
                     if cfg.solver.finetune:
@@ -429,11 +434,15 @@ def main(rank, world_size, args_cfgs):
 
                         print(f'First eigval converged, starting fine-tuning with lambda = {solver.neural_sde.eigvals[0].detach():.3E}.')
                         solver.beta = 1 / solver.neural_sde.eigvals[0].detach().abs()
-                        gs_optimizer, eigf_optimizer, ido_optimizer = initialize_optimizers()
+                        gs_optimizer, eigf_optimizer, ido_optimizer, fbsde_optimizer = initialize_optimizers()
 
                     else:
                         solver.beta = 1 / solver.neural_sde.eigvals[0].detach().abs()
                         print('First eigval converged, starting training of excited states.')
+
+                    if cfg.get('use_exact_eigvals', False):
+                        solver.neural_sde.eigvals[0] = exact_eigvals[0]
+                        print('Saved exact eigval.')
 
                     # copy weights of gs model into es model
                     # if cfg.eigf.k > 1:
@@ -622,6 +631,6 @@ if __name__ == "__main__":
     cli_cfg = OmegaConf.from_cli()
 
     args_cfgs = expand_cfg(cli_cfg)
-    world_size = min(len(args_cfgs),torch.cuda.device_count())
+    world_size = len(args_cfgs)
 
     mp.spawn(main, args=(world_size,args_cfgs), nprocs=world_size, join=True)

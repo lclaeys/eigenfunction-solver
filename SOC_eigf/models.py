@@ -125,20 +125,9 @@ class SigmoidMLP(torch.nn.Module):
         ) * sigmoid_layers_output
         return output
     
-
-class RegularizedGELU(nn.Module):
-    def __init__(self, reg = 0.0):
-        super().__init__()
-        self.reg = reg
-        self.m = nn.GELU()
-
-    def forward(self, x):
-        return self.m(x) + self.reg * x
-    
 class GELUNET(torch.nn.Module):
     def __init__(self, dim=2, k=1, hdims=[256, 128, 64], scaling_factor=1.0, reg=0.0):
         super().__init__()
-        self.reg = reg
 
         def initialize_weights(layer, scaling_factor):
             for m in layer:
@@ -146,9 +135,9 @@ class GELUNET(torch.nn.Module):
                     m.weight.data *= scaling_factor
                     m.bias.data *= scaling_factor
 
-        self.down_0 = nn.Sequential(nn.Linear(dim, hdims[0]), RegularizedGELU(self.reg))
-        self.down_1 = nn.Sequential(nn.Linear(hdims[0], hdims[1]), RegularizedGELU(self.reg))
-        self.down_2 = nn.Sequential(nn.Linear(hdims[1], hdims[2]), RegularizedGELU(self.reg))
+        self.down_0 = nn.Sequential(nn.Linear(dim, hdims[0]), nn.GELU())
+        self.down_1 = nn.Sequential(nn.Linear(hdims[0], hdims[1]), nn.GELU())
+        self.down_2 = nn.Sequential(nn.Linear(hdims[1], hdims[2]), nn.GELU())
         initialize_weights(self.down_0, scaling_factor)
         initialize_weights(self.down_1, scaling_factor)
         initialize_weights(self.down_2, scaling_factor)
@@ -160,8 +149,8 @@ class GELUNET(torch.nn.Module):
         initialize_weights(self.res_1, scaling_factor)
         initialize_weights(self.res_2, scaling_factor)
 
-        self.up_2 = nn.Sequential(nn.Linear(hdims[2], hdims[1]), RegularizedGELU(self.reg))
-        self.up_1 = nn.Sequential(nn.Linear(hdims[1], hdims[0]), RegularizedGELU(self.reg))
+        self.up_2 = nn.Sequential(nn.Linear(hdims[2], hdims[1]), nn.GELU())
+        self.up_1 = nn.Sequential(nn.Linear(hdims[1], hdims[0]), nn.GELU())
         self.up_0 = nn.Sequential(nn.Linear(hdims[0], k))
         initialize_weights(self.up_0, scaling_factor)
         initialize_weights(self.up_1, scaling_factor)

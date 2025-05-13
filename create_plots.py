@@ -5,6 +5,7 @@ import seaborn as sns
 import matplotlib.pyplot as plt
 import matplotlib.cm as cm
 import matplotlib.colors as mcolors
+from matplotlib.colors import PowerNorm  # or SymLogNorm
 
 from omegaconf import OmegaConf
 
@@ -12,6 +13,7 @@ from SOC_eigf.experiment_settings.settings import define_variables
 from SOC_eigf.utils import stochastic_trajectories, control_objective
 from SOC_eigf.method import SOC_Solver
 
+device = 'cuda:0'
 def load_eigf_df(experiment_name, run_names):
     dfs = []
     for run_name in run_names:
@@ -51,6 +53,13 @@ def load_ido_df(experiment_name, run_names):
         df['time'] = df['iteration_time'].cumsum()
         df.ffill(inplace=True)
         dfs.append(df)
+
+    df = pd.read_csv(f'experiments/{experiment_name}/FBSDE/FBSDE/logs.csv')
+    df.dropna(how='all', inplace=True)
+    df['run_name'] = 'FBSDE'
+    df['time'] = df['iteration_time'].cumsum()
+    df.ffill(inplace=True)
+    dfs.append(df)
 
     df = pd.concat(dfs)
 
@@ -112,7 +121,7 @@ def plot_eigf(experiment_name, run_names, title=None, df = None, iters=None):
     }
 
     with plt.rc_context({'font.size': 14}):
-        fig, ax = plt.subplots(figsize=(6,6))
+        fig, ax = plt.subplots(figsize=(5,5))
 
         index = 'itr'
         col_appendix = ""
@@ -124,7 +133,7 @@ def plot_eigf(experiment_name, run_names, title=None, df = None, iters=None):
             run_df.plot(x=index,y='control_objective_mean'+col_appendix, yerr='control_objective_std'+col_appendix, ax = ax, label=f'{labels[run_names[i]]}',capsize=4)
             
             #ax.set_yscale('log')
-            #ax.set_xlim(100,)
+            ax.set_xlim(0,iters)
             ax.grid()
             ax.set_xlabel('Time (s)' if index=="time" else "Iteration")
             ax.set_ylabel('Control objective')
@@ -137,12 +146,13 @@ def plot_eigf(experiment_name, run_names, title=None, df = None, iters=None):
         
         plt.title(title,fontsize=18)
         plt.tight_layout()
+        ax.legend().set_visible(False)
         plt.savefig(f'figures/{experiment_name}_eigf_objective.png', bbox_inches='tight')
         print(f'Successfully saved {experiment_name}_eigf_objective.png')
     
     if 'grad_log_eigf_error' in df.columns:
         with plt.rc_context({'font.size': 14}):
-            fig, ax = plt.subplots(figsize=(6,6))
+            fig, ax = plt.subplots(figsize=(5,5))
 
             index = 'itr'
             col_appendix = "_EMA"
@@ -151,26 +161,58 @@ def plot_eigf(experiment_name, run_names, title=None, df = None, iters=None):
                 run_df = df.query(f'run_name=="{run_names[i]}"').copy()
                 run_df.plot(x=index,y='grad_log_eigf_error'+col_appendix, label=labels[run_names[i]],ax=ax)
             ax.set_yscale('log')
-            #ax.set_xlim(100,)
+            ax.set_xlim(0,iters)
             ax.grid()
             ax.set_xlabel('Time (s)' if index=="time" else "Iteration")
             ax.set_ylabel(r"$\|\nabla\log \hat\phi_0-\nabla \log\phi_0\|_{\mu}^2$")
             
             #ax.set_ylim(1e-4,10)
             plt.title(title,fontsize=18)
-            plt.legend(loc='upper right', fontsize=14)
+            #plt.legend(loc='upper right', fontsize=14)
+            ax.legend().set_visible(False)
 
             plt.tight_layout()
             plt.savefig(f'figures/{experiment_name}_eigf_gradlog.png', bbox_inches='tight')
             print(f'Successfully saved {experiment_name}_eigf_gradlog.png')
+            
+            # 2. Grab handles & labels
+            handles, labels = plt.gca().get_legend_handles_labels()
 
-def plot_ido(experiment_name, run_names, title = None, df = None):
+            # 3. New figure for the legend
+            plt.figure(figsize=(4, 1))               # wider to fit them side by side
+            plt.legend(handles, labels,
+                    loc='center',                 # middle of the figure
+                    ncol=len(labels),             # one column per entry
+                    frameon=False)                # optional: remove box
+            plt.axis('off')
+            plt.tight_layout()
+
+            # 4. Save
+            plt.savefig("figures/eigf_legend.png",
+                        dpi=300,
+                        transparent=True,
+                        bbox_inches='tight')
+            
+def plot_ido(experiment_name, run_names, title = None, not_converged = [], df = None):
+
     if df is None:
         df = load_ido_df(experiment_name, run_names)
 
-    run_names = [f'IDO/{name}' for name in run_names] + [f'COMBINED/{name}' for name in run_names]
+    combined_names = [f'COMBINED/{name}' for name in run_names] 
+    run_names = [f'IDO/{name}' for name in run_names] + ['FBSDE']
+    
+    if experiment_name in ['OU_stable_d20','double_well_d10']:
+        run_names += ['rel_GELU']
+        df = pd.concat([df,load_eigf_df(experiment_name, ['rel_GELU'])])
+
+    run_names += combined_names
+
+    for run in not_converged:
+        run_names.remove(run)
+        
+    print(run_names)
     with plt.rc_context({'font.size': 14}):
-        fig, ax = plt.subplots(figsize=(6,6))
+        fig, ax = plt.subplots(figsize=(5,5))
 
         index = 'itr'
         col_appendix = "_EMA"
@@ -178,48 +220,183 @@ def plot_ido(experiment_name, run_names, title = None, df = None):
         colors = []
         ls = []
         for run_name in run_names:
-            if 'IDO' in run_name or 'EIGF' in run_name:
+            if 'IDO' in run_name or 'GELU' in run_name or 'FBSDE' in run_name:
                 ls += ['-']
             else:
-                ls += ['-.']
+                ls += ['--']
             
             if 'variance' in run_name:
                 colors += ['blue']
             elif 'rel_entropy' in run_name:
                 colors += ['red']
-            elif 'SOCM_adjoint' in run_name:
-                colors += ['orange']
-            elif 'SOCM' in run_name:
+            elif 'FBSDE' in run_name:
                 colors += ['green']
-            elif 'EIGF' in run_name:
+            elif 'SOCM' in run_name:
+                colors += ['orange']
+            elif 'adjoint_matching' in run_name:
+                colors += ['purple']
+            elif 'rel_GELU' in run_name:
                 colors += ['black']
-
+        
+        labels = {
+            'FBSDE': 'FBSDE',
+            'IDO/rel_entropy': 'Relative entropy',
+            'IDO/adjoint_matching': 'Adjoint matching',
+            'IDO/SOCM': 'SOCM',
+            'IDO/log_variance': 'Log-variance',
+            'rel_GELU': 'EIGF (ours)',
+            'COMBINED/log_variance': 'EIGF+Log-variance (ours)',
+            'COMBINED/rel_entropy': 'EIGF+Relative entropy (ours)',
+            'COMBINED/SOCM': 'EIGF+SOCM (ours)',
+            'COMBINED/adjoint_matching': 'EIGF+Adjoint Matching (ours)'
+        }
         for i in range(len(run_names)):
-            run_df = df.query(f'run_name=="{run_names[i]}"')
-            run_df.plot(x=index,y='control_l2_error'+col_appendix, ax = ax, label=f'{run_names[i]}', ls=ls[i],color=colors[i])
+            if run_names[i] == 'rel_GELU' and experiment_name == 'OU_stable_d20':
+                ax.plot([0],[1], label=f'{labels[run_names[i]]}', ls=ls[i],color=colors[i])
+            else:
+                run_df = df.query(f'run_name=="{run_names[i]}"')
+                run_df.plot(x=index,y='control_l2_error'+col_appendix, ax = ax, label=f'{labels[run_names[i]]}', ls=ls[i],color=colors[i])
 
-            ax.set_yscale('log')
-            #ax.set_xscale('log')
-            ax.grid()
-            ax.set_xlabel('Time (s)' if index=="time" else "Iteration")
-            ax.set_ylabel('Control $L^2$ error')
+        ax.set_yscale('log')
+        #ax.set_xscale('log')
+        ax.grid()
+        ax.set_xlabel('Time (s)' if index=="time" else "Iteration")
+        ax.set_ylabel('Control $L^2$ error')
         
         #ax.set_ylim(1e-4,10)
-        plt.legend(fontsize=14)
+        #plt.legend(fontsize=14)
+        ax.legend().set_visible(False)
         plt.title(title,fontsize=18)
         plt.tight_layout()
         plt.savefig(f'figures/{experiment_name}_ido_l2err.png', bbox_inches='tight')
         print(f'Successfully saved {experiment_name}_ido_l2err.png')
 
-def plot_error_over_time(experiment_name, run_names, title=None,df = None):
+        if experiment_name == "OU_stable_d20":        
+            handles, labels = plt.gca().get_legend_handles_labels()
+
+            ## First row 
+            plt.figure(figsize=(4, 1))               # wider to fit them side by side
+            plt.legend(handles[:-4], labels[:-4],
+                    loc='center',                 # middle of the figure
+                    ncol=len(labels[:-4]),             # one column per entry
+                    frameon=False)                # optional: remove box
+            plt.axis('off')
+            plt.tight_layout()
+
+            # 4. Save
+            plt.savefig("figures/control_l2_legend_1.png",
+                        dpi=300,
+                        transparent=True,
+                        bbox_inches='tight')
+            
+            fig, ax = plt.subplots(figsize=(5,5))
+
+            ## Second row 
+            plt.figure(figsize=(4, 1))               # wider to fit them side by side
+            plt.legend(handles[-4:], labels[-4:],
+                    loc='center',                 # middle of the figure
+                    ncol=len(labels[-4:]),             # one column per entry
+                    frameon=False)                # optional: remove box
+            plt.axis('off')
+            plt.tight_layout()
+
+            # 4. Save
+            plt.savefig("figures/control_l2_legend_2.png",
+                        dpi=300,
+                        transparent=True,
+                        bbox_inches='tight')
+            
+            fig, ax = plt.subplots(figsize=(5,5))
+
+        index = 'itr'
+        col_appendix = ""
+        ls = ['-','--','-.']
+
+        # SOCM did not converge, clutters plot
+        run_names.remove('IDO/SOCM')
+
+        if experiment_name == "OU_anisotropic_d20":
+            run_names.remove('IDO/rel_entropy')
+
+        colors = []
+        ls = []
+        for run_name in run_names:
+            if 'IDO' in run_name or 'GELU' in run_name or 'FBSDE' in run_name:
+                ls += ['-']
+            else:
+                ls += ['--']
+            
+            if 'variance' in run_name:
+                colors += ['blue']
+            elif 'rel_entropy' in run_name:
+                colors += ['red']
+            elif 'FBSDE' in run_name:
+                colors += ['green']
+            elif 'SOCM' in run_name:
+                colors += ['orange']
+            elif 'adjoint_matching' in run_name:
+                colors += ['purple']
+            elif 'rel_GELU' in run_name:
+                colors += ['black']
+
+        for i in range(len(run_names)):
+            run_df = df.query(f'run_name=="{run_names[i]}"').query('itr>=5000').copy()
+            run_df.drop_duplicates('control_objective_mean',inplace=True)
+            run_df.plot(x=index,y='control_objective_mean'+col_appendix, yerr='control_objective_std'+col_appendix, ax = ax,capsize=4, color=colors[i])
+            
+            if experiment_name == "OU_hard_d20":
+                ax.set_yscale('log')
+                ax.set_ylim(1e2,1e4)
+            #ax.set_yscale('log')
+            #ax.set_xlim(0,iters)
+            ax.grid()
+            ax.set_xlabel('Time (s)' if index=="time" else "Iteration")
+            ax.set_ylabel('Control objective')
+            
+        plt.title(title,fontsize=18)
+        plt.tight_layout()
+        ax.legend().set_visible(False)
+        plt.savefig(f'figures/{experiment_name}_objective.png', bbox_inches='tight')
+        print(f'Successfully saved {experiment_name}_objective.png')
+
+        
+
+def plot_error_over_time(experiment_name, run_names, title=None, not_converged = [], df = None):
     with plt.rc_context({'font.size': 14}):
         fig, ax = plt.subplots(figsize=(6,6))
-        itrs = [75000]*(len(run_names)-1) + [75000]
+        for run in not_converged:
+            run_names.remove(run)
+        
+        run_names.append('FBSDE/FBSDE')
+        itrs = [75000]*(len(run_names)-1) + [30000] + [75000]
         labels = run_names[:-1] + ['EIGF']
+        
+        colors = []
+        ls = []
+
+        for run_name in run_names:
+            if 'IDO' in run_name or 'EIGF' in run_name or 'FBSDE' in run_name:
+                ls += ['-']
+            else:
+                ls += ['--']
+            
+            if 'variance' in run_name:
+                colors += ['blue']
+            elif 'rel_entropy' in run_name:
+                colors += ['red']
+            elif 'FBSDE' in run_name:
+                colors += ['green']
+            elif 'SOCM' in run_name:
+                colors += ['orange']
+            elif 'adjoint_matching' in run_name:
+                colors += ['purple']
+            elif 'EIGF' in run_name:
+                colors += ['black']
+            
         for i in range(len(run_names)):
             cfg = OmegaConf.load(f'experiments/{experiment_name}/{run_names[i]}/cfg.yaml')
             cfg.num_steps=200
-            cfg.device = 'cuda:5'
+            cfg.device = device
 
             cfg.gpu = 5
             ts = torch.linspace(0, cfg.T, cfg.num_steps + 1).to(cfg.device)
@@ -229,25 +406,7 @@ def plot_error_over_time(experiment_name, run_names, title=None,df = None):
 
             state0 = x0.repeat(cfg.optim.batch_size*16, 1)
             
-            colors = []
-            ls = []
-            for run_name in run_names:
-                if 'IDO' in run_name or 'EIGF' in run_name:
-                    ls += ['-']
-                else:
-                    ls += ['-.']
-                
-                if 'variance' in run_name:
-                    colors += ['blue']
-                elif 'rel_entropy' in run_name:
-                    colors += ['red']
-                elif 'SOCM_adjoint' in run_name:
-                    colors += ['orange']
-                elif 'SOCM' in run_name:
-                    colors += ['green']
-                elif 'EIGF' in run_name:
-                    colors += ['black']
-
+            
             if i == 0:
                 states,_,_,_,_,target_control = stochastic_trajectories(
                                             optimal_sde,
@@ -258,7 +417,7 @@ def plot_error_over_time(experiment_name, run_names, title=None,df = None):
                 target_control = target_control.cpu()
             if cfg.method == "EIGF":
                 try:
-                    checkpoint = torch.load(f'experiments/{experiment_name}/{run_names[i]}/neural_sde_weights.pth',map_location='cuda:5')
+                    checkpoint = torch.load(f'experiments/{experiment_name}/{run_names[i]}/neural_sde_weights.pth',map_location=device)
                 except FileNotFoundError as e:
                     print('Error: Please train EIGF model before attempting to train combined model!')
                     raise e
@@ -276,7 +435,7 @@ def plot_error_over_time(experiment_name, run_names, title=None,df = None):
                     solver_cfg=cfg.solver
                 )
             if cfg.method != "EIGF":
-                solver.load_state_dict(torch.load(f'experiments/{experiment_name}/{run_names[i]}/solver_weights_{itrs[i]:_}.pth',map_location='cuda:5'),strict=True)
+                solver.load_state_dict(torch.load(f'experiments/{experiment_name}/{run_names[i]}/solver_weights_{itrs[i]:_}.pth',map_location=device),strict=True)
             learned_control = solver.neural_sde.control(ts[:-1],states[:-1]).cpu()
             norm_sqd_diff = torch.sum((target_control - learned_control) ** 2,dim=-1).mean(dim=1)
             norm_sqd_diff_err = torch.std((target_control - learned_control) ** 2,dim=-1).mean(dim=1)
@@ -285,7 +444,7 @@ def plot_error_over_time(experiment_name, run_names, title=None,df = None):
     plt.yscale('log')
     plt.ylim(None,1e2)
     plt.grid()
-    plt.legend(loc='upper left',fontsize=14)
+    ax.legend().set_visible(False)
     plt.xlabel('Time $t$')
     plt.ylabel('Control $L^2$ error')
     plt.title(title,fontsize=18)
@@ -295,9 +454,9 @@ def plot_error_over_time(experiment_name, run_names, title=None,df = None):
 def plot_ring():
     with plt.rc_context({'font.size': 14}):
         experiment_name = 'ring_d2/EIGF'
-        run_names = ['ritz_GELU','pinn_GELU','rel_GELU']
+        run_names = ['ritz_GELU','var_GELU','pinn_GELU','rel_GELU']
         solvers = {}
-        for run_name in run_names:
+        for run_name in run_names:  
             cfg = OmegaConf.load(f'experiments/{experiment_name}/{run_name}/cfg.yaml')
             cfg.device = "cuda:7"
             cfg.num_steps=500
@@ -319,7 +478,7 @@ def plot_ring():
                     solver_cfg=cfg.solver
                 )
 
-            solver.load_state_dict(torch.load(f'experiments/{experiment_name}/{run_name}/solver_weights_15_000.pth',map_location='cuda:7'))
+            solver.load_state_dict(torch.load(f'experiments/{experiment_name}/{run_name}/solver_weights_15_000.pth',map_location=device))
             solvers[run_name] = solver
 
         dfs = []
@@ -345,7 +504,7 @@ def plot_ring():
         print(df.columns)
 
         labels = {'pinn_GELU': 'PINN loss',
-                'rel_GELU': 'Relative loss',
+                'rel_GELU': 'Relative loss (ours)',
                 'var_GELU': 'Variational loss',
                 'ritz_GELU': 'Deep Ritz loss'}
         
@@ -470,25 +629,378 @@ def plot_ring():
 
         plt.tight_layout()
         plt.savefig(f'figures/ring_d2_eigf.png', bbox_inches='tight')
+        print(f'Successfully saved ring_d2_eigf.png')
 
-experiment_names = ['OU_stable_d20', 'OU_anisotropic_d20', 'double_well_d10']
-titles = ['Quadratic (isotropic) (d=20)', 'Quadratic (anisotropic) (d=20)', 'Double well (d=10)']
-iters = [80000,80000,80000]
+        # --- parameters ---
+        x_lim, y_lim = (-5, 5), (-5, 5)
+        bg_res = 200
+        heat_cmap = "viridis"
+        heat_alpha = 0.6
 
-run_names_list = [['var_GELU','ritz_GELU','pinn_GELU','rel_GELU']] * 3
+        # 1) PRE‐COMPUTE ALL Z GRIDS TO FIND GLOBAL vmin/vmax -------------------
+        #    This makes two loops, but for bg_res=200 it's still very fast.
+        Z_list = []
+        xs = torch.linspace(*x_lim, bg_res, device=ts.device)
+        ys = torch.linspace(*y_lim, bg_res, device=ts.device)
+        X, Y = torch.meshgrid(xs, ys, indexing="ij")
+        XY = torch.stack([X.flatten(), Y.flatten()], dim=-1)
 
-ido_run_names = ['rel_entropy','log_variance','SOCM']
+        with torch.no_grad():
+            for run in run_names:
+                solver = solvers[run]
+                Z = -solver.neural_sde.eigf_gs_model(XY).squeeze(-1)
+                Z_list.append(Z.cpu().reshape(bg_res, bg_res))
 
-plot_ring()
+        # compute global min/max
+        all_Z = torch.stack([z.flatten() for z in Z_list])
+
+        z_min, z_max = float(all_Z.min()), float(all_Z.max())
+        norm = PowerNorm(gamma=0.4, vmin=z_min, vmax=z_max)
+
+        # 2) PLOT EACH SUBPLOT WITH THE SHARED SCALE ---------------------------
+        fig, axes = plt.subplots(1, len(run_names), figsize=(5 * len(run_names), 5), sharey=True, sharex=True)
+        if len(run_names) == 1:
+            axes = [axes]
+
+        for j, run in enumerate(run_names):
+            solver = solvers[run]
+            Z = Z_list[j]
+
+            # heatmap with common vmin/vmax
+            im = axes[j].imshow(
+                Z.T,
+                extent=[*x_lim, *y_lim],
+                origin="lower",
+                cmap=heat_cmap,
+                alpha=heat_alpha,
+                aspect="equal",
+                norm=norm, 
+                zorder=0,
+                label = 'Learned value function'
+            )
+
+            # control‐vector quiver (unchanged)
+            num_angles = 50
+            angles = torch.linspace(0, 2*np.pi, num_angles, device=ts.device)
+            rs = torch.linspace(4.5, 5.5, 3, device=ts.device)
+            states = torch.cat([
+                r/2**0.5*torch.stack([angles.cos(), angles.sin()], dim=1)
+                for r in rs
+            ])
+            controls = solver.control(
+                torch.zeros(len(states), device=states.device), states
+            )
+            x, y = states[:,0].cpu().detach(), states[:,1].cpu().detach()
+            u, v = controls[:,0].cpu().detach(), controls[:,1].cpu().detach()
+
+            axes[j].quiver(
+                x, y, u, v,
+                angles="xy", scale_units="xy", scale=4.0,
+                color="black", alpha=1.0, zorder=1
+            )
+
+            # labels & styling
+            axes[j].set_xlabel("X position")
+            axes[j].set_ylabel("Y position")
+            axes[j].set_title(labels[run])
+            axes[j].set_xlim(*x_lim)
+            axes[j].set_ylim(*y_lim)
+            axes[j].grid(True)
+
+        # 3) SHARED COLORBAR ----------------------------------------------------
+        cbar = fig.colorbar(
+            im, ax=axes,
+            orientation="vertical",
+            fraction=0.02, pad=0.04,
+            location="right"
+        )
+        cbar.set_label("Learned value function $V_0$")  # new label
+
+        plt.suptitle("Learned control inputs and $V_0$")
+        #plt.tight_layout()
+        plt.savefig(f'figures/ring_d2_visualization.png', bbox_inches='tight')
+        print(f'Successfully saved ring_d2_visualization.png')
+
+def plot_exact_eigf():
+    torch.random.manual_seed(0)
+    cfg = OmegaConf.load('experiment_cfg.yaml')
+    cfg.device = "cuda:1"
+    cfg.setting = "OU_quadratic_stable"
+    cfg.d = 20
+    cfg.T = 3.0
+    cfg.num_steps=1000
+    cfg.optim.batch_size=128*16
+    ts = torch.linspace(0, cfg.T, cfg.num_steps + 1).to(cfg.device)
+    x0, sigma, optimal_sde, neural_sde = define_variables(cfg, ts)
+    optimal_sde.use_learned_control = False
+
+    state0 = x0.repeat(cfg.optim.batch_size, 1)
+    states,_,_,_,_,target_controls = stochastic_trajectories(
+                                optimal_sde,
+                                state0,
+                                ts.to(state0),
+                                cfg.lmbd,
+                                detach=True)
+    
+    gs_controls = optimal_sde.exact_eigf_control(ts[:-1], states[:-1], 1)
+
+    fig, ax = plt.subplots(figsize=(5,4))
+    colormap_name = 'coolwarm'
+    colormap = plt.get_cmap(colormap_name)
+
+    max_k = 200
+    step = 20
+    ks = np.arange(1,max_k,step)
+    colors = [colormap(i / (len(ks) - 1)) for i in range(len(ks))]
+
+    # Normalize the color map to the range of ks
+    norm = mcolors.Normalize(vmin=ks.min(), vmax=ks.max())
+    sm = cm.ScalarMappable(cmap=colormap, norm=norm)
+    sm.set_array([])  # Needed for the colorbar
+
+    for k in ks:
+        color = colormap(norm(k))
+        eigf_controls = optimal_sde.exact_eigf_control(ts[:-1], states[:-1], k, verbose=False)
+        err = ((eigf_controls - target_controls)**2).sum(dim=2).median(dim=1).values.cpu()
+        ax.plot(ts[:-1].cpu(), err, color=color)
+        ax.set_yscale('log')
+
+    # Add colorbar
+    cbar = fig.colorbar(sm, ax=ax)
+    cbar.set_label('Number of eigenfunctions')
+    ax.set_ylabel('Control error $\|u-u^*\|^2$')
+    ax.set_xlabel('Time $t$')
+    ax.set_title('Control $L^2$ error vs. time $t$\n (truncated eigenfunction solution)')
+    ax.grid()
+    plt.tight_layout()
+    plt.savefig(f'figures/exact_eigf_solution.png', bbox_inches='tight')
+    print(f'Successfully saved exact_eigf_solution.png')
+
+def plot_horizon_degradation():
+
+    # Compute for fully converged rel entropy method
+    cfg = OmegaConf.load(f'experiments/OU_hard_d20/COMBINED/rel_entropy/cfg.yaml')
+    cfg.device = device
+
+    Ts = np.linspace(0.5,5,10)
+    steps = Ts*50
+
+    data = {'T': np.zeros(len(Ts)),
+            'mean_l2_error': np.zeros(len(Ts)),
+            'q05_error': np.zeros(len(Ts)),
+            'q95_error': np.zeros(len(Ts))}
+
+    batch_size = 128
+
+    norm_sqd_diff = torch.zeros(1024*cfg.optim.batch_size, device = cfg.device)
+
+    for i in range(len(Ts)):
+        with torch.no_grad():
+            cfg.num_steps= int(steps[i])
+            cfg.T = float(Ts[i])
+            cfg.device = device
+            cfg.gpu = 5
+
+            ts = torch.linspace(0, cfg.T, cfg.num_steps + 1).to(cfg.device)
+
+            x0, sigma, optimal_sde, neural_sde = define_variables(cfg, ts)
+            optimal_sde.use_learned_control = False
+
+            solver = SOC_Solver(
+                        neural_sde,
+                        x0,
+                        None,
+                        T=cfg.T,
+                        num_steps=cfg.num_steps,
+                        lmbd=cfg.lmbd,
+                        d=cfg.d,
+                        sigma=sigma,
+                        solver_cfg=cfg.solver
+                    )
+
+            solver.load_state_dict(torch.load(f'experiments/OU_hard_d20/COMBINED/rel_entropy/solver_weights_30_000.pth',map_location=device),strict=True)
+
+            for j in range(1024//batch_size):
+                state0 = x0.repeat(cfg.optim.batch_size*batch_size, 1)
+
+                torch.random.manual_seed(j)
+                states,_,_,_,_,target_control = stochastic_trajectories(
+                                            optimal_sde,
+                                            state0,
+                                            ts.to(state0),
+                                            cfg.lmbd,
+                                            detach=True)
+                target_control = target_control.cpu()
+                
+                learned_control = solver.neural_sde.control(ts[:-1],states[:-1]).cpu()
+                idx1 = j*batch_size*cfg.optim.batch_size
+                idx2 = (j+1)*batch_size*cfg.optim.batch_size
+                norm_sqd_diff[idx1:idx2] = ((target_control - learned_control) ** 2).sum(dim=-1).mean(dim=0) 
+            
+            data['T'][i] = Ts[i]
+            data['mean_l2_error'][i], data['q05_error'][i], data['q95_error'][i] = norm_sqd_diff.mean(), norm_sqd_diff.quantile(0.05), norm_sqd_diff.quantile(0.95)
+        
+    combined_df = pd.DataFrame(data)
+    combined_df['algo'] = "EIGF+IDO (ours)"
+
+    # Last 1000 iterations for IDO/FBSDE
+
+    experiment_name = "OU_hard_d20_Tscan"
+
+    runs = ['FBSDE']
+    runs = ['IDO/adjoint_matching','IDO/relative_entropy','IDO/log_variance','FBSDE']
+                        
+    run_names = [f'{run}/T={T:.1f}' for run in runs for T in np.linspace(0.5,5.0,10)]
+
+    dfs = []
+    for run_name in run_names:
+        df = pd.read_csv(f'experiments/{experiment_name}/{run_name}/logs.csv')
+        df.dropna(how='all', inplace=True)
+        df['run_name'] = run_name
+        df['time'] = df['iteration_time'].cumsum()
+        df.ffill(inplace=True)
+        dfs.append(df)
+
+    df = pd.concat(dfs)
+    df['T'] = df['run_name'].str[-3:].astype(float)
+    df['algo'] = df['run_name'].str[:-6].replace({
+        'IDO/adjoint_matching': 'Adjoint matching (IDO)',
+        'IDO/log_variance': 'Log-variance (IDO)',
+        'IDO/relative_entropy': 'Relative entropy (IDO)'
+        })
+    
+    # Function to compute mean and 5–95% quantiles for last 1000 iterations
+    def last_1000_stats(group):
+        last_1000 = group.sort_values('itr')[29000:30000]['control_l2_error']
+        return pd.Series({
+            'mean_l2_error': last_1000.mean(),
+            'q05_error': last_1000.quantile(0.05),
+            'q95_error': last_1000.quantile(0.95)
+        })
+
+    # Apply the function
+    grouped = df.groupby(['algo', 'T']).apply(last_1000_stats).reset_index()
+
+    grouped = pd.concat([grouped, combined_df])
+
+    colors = {'Adjoint matching (IDO)': 'orange',
+            'Log-variance (IDO)': 'blue',
+            'Relative entropy (IDO)': 'red',
+            'FBSDE': 'green',
+            'EIGF+IDO (ours)': 'black'}
+
+    # Compute lower and upper error bounds for asymmetric error bars
+    grouped['yerr_lower'] = grouped['mean_l2_error'] - grouped['q05_error']
+    grouped['yerr_upper'] = grouped['q95_error'] - grouped['mean_l2_error']
+
+    # Plot with asymmetric error bars
+    plt.figure(figsize=(5, 5))
+    for algo in grouped['algo'].unique():
+        subset = grouped[grouped['algo'] == algo]
+        plt.errorbar(
+            subset['T'], 
+            subset['mean_l2_error'], 
+            yerr=[subset['yerr_lower'], subset['yerr_upper']],
+            label=algo, 
+            capsize=4,
+            markersize=4, 
+            marker='o', 
+            linestyle='-',
+            color = colors[algo]
+        )
+
+    plt.title('Control $L^2$ Error vs $T$ (after 30k iterations)')
+    plt.xlabel('Time Horizon $T$')
+    plt.ylabel('Control $L^2$ Error')
+    plt.yscale('log')
+    plt.legend(title='Algorithm')
+    plt.grid(True)
+    plt.tight_layout()
+    plt.savefig(f'figures/long_horizon_degradation.png', bbox_inches='tight')
+    print(f'Successfully saved long_horizon_degradation.png')
+
+    our_time = pd.read_csv(f'experiments/OU_hard_d20/COMBINED/rel_entropy/logs.csv')[1000:5000]['iteration_time']
+    our_df = pd.DataFrame({'algo': 'EIGF+IDO (ours)',
+            'mean_l2_error': our_time.mean(),
+            'q05_error': our_time.quantile(0.05),
+            'q95_error': our_time.quantile(0.95),
+            'T': np.linspace(0.5,5,10)})
+    
+    # Function to compute mean and 5–95% quantiles for last 1000 iterations
+    def last_1000_stats(group):
+        last_1000 = group.sort_values('itr')[1000:5000]['iteration_time']
+        return pd.Series({
+            'mean_l2_error': last_1000.mean(),
+            'q05_error': last_1000.quantile(0.05),
+            'q95_error': last_1000.quantile(0.95)
+        })
+
+    # Apply the function
+    grouped = df.groupby(['algo', 'T']).apply(last_1000_stats).reset_index()
+    grouped = pd.concat([grouped, our_df])
+    # Compute lower and upper error bounds for asymmetric error bars
+    grouped['yerr_lower'] = grouped['mean_l2_error'] - grouped['q05_error']
+    grouped['yerr_upper'] = grouped['q95_error'] - grouped['mean_l2_error']
+
+    # Plot with asymmetric error bars
+    plt.figure(figsize=(5,5))
+    for algo in grouped['algo'].unique():
+        subset = grouped[grouped['algo'] == algo]
+        plt.errorbar(
+            subset['T'], 
+            subset['mean_l2_error'], 
+            yerr=[subset['yerr_lower'], subset['yerr_upper']],
+            label=algo, 
+            capsize=4,
+            markersize=4, 
+            marker='o', 
+            linestyle='-',
+            color=colors[algo]
+        )
+
+    plt.title('Iteration time vs $T$')
+    plt.xlabel('Time Horizon $T$')
+    plt.ylabel('Iteration time (s)')
+    plt.legend(title='Algorithm')
+    plt.grid(True)
+    plt.tight_layout()
+    plt.savefig(f'figures/long_horizon_iteration_time.png', bbox_inches='tight')
+    print(f'Successfully saved long_horizon_iteration_time.png')
+
+    # 2. Grab handles & labels
+    handles, labels = plt.gca().get_legend_handles_labels()
+
+    # 3. New figure just for legend
+    plt.figure(figsize=(2,1))
+    plt.legend(handles, labels, loc='center')
+    plt.axis('off')            # hide any axes/frame
+    plt.tight_layout()
+
+    # 4. Save it
+    plt.savefig("figures/legend_only.png", dpi=300, transparent=True, bbox_inches='tight')
+
+experiment_names = ['OU_stable_d20', 'OU_hard_d20', 'OU_anisotropic_d20', 'double_well_d10']
+titles = ['Quadratic (isotropic) (d=20)', 'Quadratic (repulsive) (d=20)', 'Quadratic (anisotropic) (d=20)', 'Double well (d=10)']
+iters = [80000,25000,80000,80000]
+
+run_names_list = [['var_GELU','ritz_GELU','pinn_GELU','rel_GELU']] * 4
+
+ido_run_names = ['rel_entropy','log_variance','SOCM','adjoint_matching']
+
+not_converged = [[],['COMBINED/log_variance','COMBINED/adjoint_matching'],['COMBINED/log_variance'],['COMBINED/log_variance','COMBINED/adjoint_matching','COMBINED/SOCM','COMBINED/rel_entropy']]
+#plot_ring()
 for i in range(len(experiment_names)):
-    plot_eigf(experiment_names[i], run_names_list[i], iters=iters[i],title=titles[i])
+    #plot_eigf(experiment_names[i], run_names_list[i], iters=iters[i],title=titles[i])
 
-    plot_ido(experiment_names[i], ido_run_names, titles[i])
+    plot_ido(experiment_names[i], ido_run_names, titles[i], not_converged[i])
 
     over_time_names = [f'IDO/{ido_run}' for ido_run in ido_run_names] + [f'COMBINED/{ido_run}' for ido_run in ido_run_names] + ['EIGF/rel_GELU']
     
-    if i < 2:
-        plot_error_over_time(experiment_names[i],over_time_names,titles[i])
+    #plot_error_over_time(experiment_names[i],over_time_names,titles[i], not_converged[i])
 
-plot_eigf('ring_d2',run_names_list[0],iters=20000,title="Ring (d=2)")
+    pass
 
+#plot_eigf('ring_d2',run_names_list[0],iters=20000,title="Ring (d=2)")
+
+#plot_exact_eigf()
+#plot_horizon_degradation()

@@ -194,9 +194,18 @@ def define_variables(cfg, ts):
             P = 1.0 * torch.eye(cfg.d).to(cfg.device)
             Q = 0.5 * torch.eye(cfg.d).to(cfg.device)
         elif cfg.setting == "OU_quadratic_easy":
-            A = -0.2 * torch.eye(cfg.d).to(cfg.device)
-            P = 0.2 * torch.eye(cfg.d).to(cfg.device)
-            Q = 0.1 * torch.eye(cfg.d).to(cfg.device)
+            rng = np.random.RandomState(0)
+            torch.manual_seed(0)
+            if torch.cuda.is_available():
+                torch.cuda.manual_seed_all(0)
+
+            U = torch.tensor(ortho_group.rvs(cfg.d,random_state=rng)).float()
+            a = torch.randn([cfg.d])
+            p = torch.randn([cfg.d])
+            A = 1.0 * torch.diag(a.exp()).to(cfg.device)
+            P = (U @ torch.diag(p.exp()) @ U.T).to(cfg.device)
+            Q = 0.5 * torch.eye(cfg.d).to(cfg.device)
+            
         elif cfg.setting == "OU_quadratic_stable":
             A = -1.0 * torch.eye(cfg.d).to(cfg.device)
             P = 1.0 * torch.eye(cfg.d).to(cfg.device)

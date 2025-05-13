@@ -83,7 +83,7 @@ class OU_Quadratic(NeuralSDE):
     
     # Laplacian of energy
     def Delta_E(self, x):
-        return torch.ones(x.shape[:-1],device=self.device) * torch.trace(self.A)
+        return -torch.ones(x.shape[:-1],device=self.device) * torch.trace(self.A)
 
     # Running cost
     def f(self, t, x):
