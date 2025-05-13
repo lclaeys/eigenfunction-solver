@@ -1,0 +1,14 @@
+notebooks/wandb
+experiments/quadratic_energy/wandb/
+__pycache__/
+nohup.out
+*.npz
+*.csv
+*.png
+*.log
+*.pkl
+*.wandb
+wandb-*
+*.yaml
+*.txt
+*.pyc
