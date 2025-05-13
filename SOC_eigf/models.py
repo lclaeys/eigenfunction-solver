@@ -346,7 +346,64 @@ class GaussianNet(nn.Module):
         out = self.net((x-shift)/scale)
         return out
     
+class GenericNet(nn.Module):
+    def __init__(self, dim=2, k=1, hdims=[128, 128, 128], reg=0.0, activation=nn.ReLU, activation_kwargs=None):
+        super().__init__()
 
+        if activation_kwargs is None:
+            activation_kwargs = {}
+
+        self.net = []
+
+        # First layer
+        self.net.append(nn.Sequential(
+            nn.Linear(dim, hdims[0]),
+            activation(**activation_kwargs)
+        ))
+
+        # Hidden layers
+        for i in range(len(hdims) - 1):
+            self.net.append(nn.Sequential(
+                nn.Linear(hdims[i], hdims[i + 1]),
+                activation(**activation_kwargs)
+            ))
+
+        # Final output layer
+        self.net.append(nn.Sequential(nn.Linear(hdims[-1], k)))
+
+        self.net = nn.Sequential(*self.net)
+
+        # Shift and scale parameters (non-trainable)
+        self.shift = nn.Parameter(torch.zeros(dim), requires_grad=False)
+        self.scale = nn.Parameter(torch.ones(dim), requires_grad=False)
+
+        # Apply custom initialization
+        self._initialize_weights()
+
+    def _initialize_weights(self):
+        for m in self.net.modules():
+            if isinstance(m, nn.Linear):
+                nn.init.xavier_normal_(m.weight)
+                nn.init.constant_(m.bias, 0.0)
+
+    def forward(self, x):
+        shape = [1] * (x.dim() - 1) + [-1]
+        shift = self.shift.view(*shape)
+        scale = self.scale.view(*shape)
+
+        out = self.net((x - shift) / scale)
+        return out
+
+class GenericNetFactory:
+    def __init__(self, activation=nn.ReLU, activation_kwargs=None):
+        self.activation = activation
+        self.activation_kwargs = activation_kwargs if activation_kwargs is not None else {}
+
+    def __call__(self, dim, k=1, hdims=[128,128,128], reg=0.0):
+        return GenericNet(dim=dim, k=k, hdims=hdims, reg=reg,
+                          activation=self.activation,
+                          activation_kwargs=self.activation_kwargs)
+    
 class LinearControl:
     def __init__(self, u, T):
         self.u = u

@@ -8,6 +8,7 @@ Furthermore, it contains the following functions which are adapted from https://
     - Compute EMA (changed to log space)
     - Compute control objective
     - Compute trajectories (added function that only outputs the final states)
+    - Solution for LQR
 """
 
 import torch

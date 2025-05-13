@@ -11,7 +11,7 @@ The folder `SOC_eigf` contains the code of the method, and the file `main.py` ca
 torchrun main.py --master_port=29500 setting="double_well" d=10 method="EIGF" solver.eigf_loss=["ritz","var"] gpu=[0,1] run_name=["ritz_test","var_test"] experiment_name="double_well_d10"
 ```
 
-will run the eigenfunction method for the `DoubleWell` setting in $d=10$, using the Ritz loss on `cuda:0` and the variational loss on `cuda:1`, and save the results in `experiments/double_well_d10/EIGF/ritz_test` and `experiments/double_well_d10/EIGF/var_test` respectively.
+will run the eigenfunction method for the `DoubleWell` setting in $d=10$, using the deep Ritz loss on `cuda:0` and the variational loss on `cuda:1`, and save the results in `experiments/double_well_d10/EIGF/ritz_test` and `experiments/double_well_d10/EIGF/var_test` respectively.
 
 ## Reproducing experiments
 

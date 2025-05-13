@@ -1,0 +1,3 @@
+[submodule "socmatching"]
+	path = socmatching
+	url = https://github.com/facebookresearch/SOC-matching.git

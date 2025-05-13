@@ -12,3 +12,6 @@ wandb-*
 *.yaml
 *.txt
 *.pyc
+*.pt
+*.pth
+solver_weights_*
