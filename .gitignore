@@ -10,7 +10,6 @@ nohup.out
 *.wandb
 wandb-*
 *.yaml
-*.txt
 *.pyc
 *.pt
 *.pth

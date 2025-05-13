@@ -1,0 +1,65 @@
+============ EXPERIMENT 1: ATTRACTIVE ISOTROPIC ==================
+
+# 1. EIGF
+torchrun --master_port=29500 main.py setting="OU_quadratic_stable" d=20 num_iterations=80000 lmbd=1.0 T=4.0 eval_frac=0.5 num_steps=200 method="EIGF" seed=0 save_model_every=2500 log_every=100 compute_control_error_every=100 eigf.k=2 eigf.hdims=[[256,128,64],[256,128,64],[256,128,64],[256,128,64]] eigf.arch='GELUNET' solver.eigf_loss=["ritz","var","pinn","rel"] solver.langevin_dt=0.01 solver.beta=0.05 solver.nsamples=65536 optim.batch_size=128 run_name=["ritz_GELU","var_GELU","pinn_GELU","rel_GELU"] solver.finetune=[false,false,true,true] gpu=0 experiment_name="OU_stable_d20"
+
+# 2. IDO
+torchrun --master_port=29500 main.py setting="OU_quadratic_stable" d=20 num_iterations=80000 lmbd=1.0 T=4.0 eval_frac=1.0 num_steps=200 method="IDO" seed=0 save_model_every=5000 log_every=100 ido.hdims=[[256,128,64],[256,128,64],[256,128,64],[256,128,64]] solver.ido_algorithm=['SOCM','adjoint_matching','rel_entropy','log-variance'] compute_control_error_every=100 optim.batch_size=64 run_name=["SOCM","adjoint_matching","rel_entropy","log_variance"] gpu=0 experiment_name="OU_stable_d20"
+
+# 3. COMBINED
+torchrun --master_port=29500 main.py setting="OU_quadratic_stable" d=20 num_iterations=80000 lmbd=1.0 T=4.0 eval_frac=1.0 num_steps=200 method="COMBINED" seed=0 save_model_every=5000 log_every=100 ido.hdims=[[256,128,64],[256,128,64],[256,128,64],[256,128,64]] solver.ido_algorithm=['SOCM','adjoint_matching','rel_entropy','log-variance'] compute_control_error_every=100 optim.batch_size=64 run_name=["SOCM","adjoint_matching","rel_entropy","log_variance"] ido.T_cutoff=1.0 trained_eigf_run_name='rel_GELU' ido.train_scalar=false gpu=0 experiment_name="OU_stable_d20"
+
+============ EXPERIMENT 2: ATTRACTIVE ANISOTROPIC ==================
+
+# 4. EIGF
+torchrun --master_port=29500 main.py setting="OU_quadratic_anisotropic" d=20 num_iterations=80000 lmbd=1.0 T=4.0 eval_frac=0.5 num_steps=200 method="EIGF" seed=0 save_model_every=2500 log_every=100 compute_control_error_every=100 eigf.k=2 eigf.hdims=[[256,128,64],[256,128,64],[256,128,64],[256,128,64]] eigf.arch='GELUNET' solver.eigf_loss=["ritz","var","pinn","rel"] solver.langevin_dt=0.01 solver.beta=0.02 solver.nsamples=65536 optim.batch_size=128 run_name=["ritz_GELU","var_GELU","pinn_GELU","rel_GELU"] solver.finetune=[false,false,true,true] gpu=0 experiment_name="OU_anisotropic_d20"
+
+# 5. IDO
+torchrun --master_port=29500 main.py setting="OU_quadratic_anisotropic" d=20 num_iterations=80000 lmbd=1.0 T=4.0 eval_frac=1.0 num_steps=200 method="IDO" seed=0 save_model_every=5000 log_every=100 ido.hdims=[[256,128,64],[256,128,64],[256,128,64],[256,128,64]] solver.ido_algorithm=['SOCM','adjoint_matching','rel_entropy','log-variance'] compute_control_error_every=100 optim.batch_size=64 run_name=["SOCM","adjoint_matching","rel_entropy","log_variance"] gpu=0 experiment_name="OU_anisotropic_d20"
+
+# 6. COMBINED
+torchrun --master_port=29500 main.py setting="OU_quadratic_anisotropic" d=20 num_iterations=80000 lmbd=1.0 T=4.0 eval_frac=1.0 num_steps=200 method="COMBINED" seed=0 save_model_every=5000 log_every=100 ido.hdims=[[256,128,64],[256,128,64],[256,128,64],[256,128,64]] solver.ido_algorithm=['SOCM','SOCM_adjoint','rel_entropy','log-variance'] compute_control_error_every=100 optim.batch_size=64 run_name=["SOCM","SOCM_adjoint","rel_entropy","log_variance"] ido.T_cutoff=1.0 ido.use_eigval=true trained_eigf_run_name='rel_GELU' ido.train_scalar=false gpu=0 experiment_name="OU_anisotropic_d20"
+
+============ EXPERIMENT 3: DOUBLE WELL ====================
+
+# 7. EIGF
+torchrun --master_port=29500 main.py setting="double_well" d=10 num_steps=200 T=4.0 lmbd=1.0 eval_frac=1.0 solver.langevin_dt=0.002 method="EIGF" solver.langevin_burnin_steps=100000 solver.langevin_sample_steps=1000 num_iterations=80000 solver.eigf_loss=["ritz","var","pinn","rel","log_rel"] solver.finetune=[false,false,true,true,true] experiment_name="double_well_d10" eigf.k=2 eigf.reg=1e-2 eigf.hdims=[[256,128,64],[256,128,64],[256,128,64],[256,128,64],[256,128,64]] delta_t_optimal=0.0001 delta_x_optimal=0.01 eigf.arch='GELUNET' run_name=['ritz_GELU','var_GELU','pinn_GELU','rel_GELU',"log_rel_GELU"] gpu=0
+
+# 8. IDO
+torchrun --master_port=29500 main.py setting="double_well" d=10 num_iterations=80000 lmbd=1.0 T=4.0 eval_frac=1.0 num_steps=200 method="IDO" seed=0 save_model_every=5000 log_every=100 ido.hdims=[[256,128,64],[256,128,64],[256,128,64],[256,128,64]] solver.ido_algorithm=['SOCM','adjoint_matching','rel_entropy','log-variance'] compute_control_error_every=100 optim.batch_size=64 delta_t_optimal=0.0001 delta_x_optimal=0.01 run_name=["SOCM","adjoint_matching","rel_entropy","log_variance"] gpu=0 experiment_name="double_well_d10"
+
+# 9. COMBINED
+torchrun --master_port=29500 main.py setting="double_well" d=10 num_iterations=80000 lmbd=1.0 T=4.0 eval_frac=1.0 num_steps=200 method="COMBINED" seed=0 save_model_every=5000 log_every=100 ido.hdims=[[256,128,64],[256,128,64],[256,128,64],[256,128,64]] solver.ido_algorithm=['SOCM','adjoint_matching','rel_entropy','log-variance'] compute_control_error_every=100 optim.batch_size=64 delta_t_optimal=0.0001 delta_x_optimal=0.01 run_name=["SOCM","adjoint_matching","rel_entropy","log-variance"] ido.T_cutoff=1.0 trained_eigf_run_name='rel_GAUSS' ido.train_scalar=false gpu=0 experiment_name="double_well_d10"
+
+============ EXPERIMENT 4: RING ====================
+
+# 10. EIGF
+torchrun --master_port=29500 main.py setting="ring" method="EIGF" num_steps=500 T=5.0 lmbd=1.0 solver.langevin_dt=0.002 solver.langevin_burnin_steps=100000 solver.langevin_sample_steps=1000 d=2 num_iterations=20000 solver.eigf_loss=['var','ritz','pinn','rel'] solver.finetune=[false,false,true,true] experiment_name="ring_d2" eigf.k=1 eigf.hdims=[[256,128,64],[256,128,64],[256,128,64],[256,128,64]] eigf.arch='GELUNET' run_name=['var_GELU','ritz_GELU','pinn_GELU','rel_GELU'] gpu=0
+
+
+============ EXPERIMENT 5: REPULSIVE ISOTROPIC ==================
+
+# 11. EIGF
+torchrun --master_port=29500 main.py setting="OU_quadratic_hard" d=20 num_iterations=80000 lmbd=1.0 T=4.0 eval_frac=0.5 num_steps=400 method="EIGF" seed=0 save_model_every=2500 log_every=100 compute_control_error_every=100 eigf.k=2 eigf.hdims=[[256,128,64],[256,128,64],[256,128,64],[256,128,64]] eigf.arch='GELUNET' solver.eigf_loss=["ritz","var","pinn","rel"] solver.langevin_dt=0.01 solver.beta=0.01 solver.nsamples=65536 optim.batch_size=128 run_name=["ritz_GELU","var_GELU","pinn_GELU","rel_GELU"] solver.finetune=[false,false,true,true] gpu=0 experiment_name="OU_hard_d20"
+
+# 12. IDO
+torchrun --master_port=29500 main.py setting="OU_quadratic_hard" d=20 num_iterations=80000 lmbd=1.0 T=4.0 eval_frac=1.0 num_steps=200 method="IDO" seed=0 save_model_every=5000 log_every=100 ido.hdims=[[256,128,64],[256,128,64],[256,128,64],[256,128,64]] solver.ido_algorithm=['SOCM','adjoint_matching','rel_entropy','log-variance'] compute_control_error_every=100 optim.batch_size=64 run_name=["SOCM","adjoint_matching","rel_entropy","log_variance"] gpu=0 experiment_name="OU_hard_d20"
+
+# 13. COMBINED
+torchrun --master_port=29500 main.py setting="OU_quadratic_hard" d=20 num_iterations=80000 lmbd=1.0 T=4.0 eval_frac=1.0 num_steps=200 method="COMBINED" seed=0 save_model_every=5000 log_every=100 ido.hdims=[[256,128,64],[256,128,64],[256,128,64],[256,128,64]] solver.ido_algorithm=['SOCM','adjoint_matching','rel_entropy','log-variance'] compute_control_error_every=100 optim.batch_size=64 run_name=["SOCM","adjoint_matching","rel_entropy","log_variance"] ido.T_cutoff=1 trained_eigf_run_name='rel_GELU' ido.train_scalar=false gpu=0 experiment_name="OU_hard_d20"
+
+============ EXPERIMENT 6: DEEP FBSDE METHOD ==================
+
+torchrun --master_port=29500 main.py setting=["OU_quadratic_hard","OU_quadratic_anisotropic","OU_quadratic_stable","double_well"] d=[20,20,20,10] num_iterations=80000 lmbd=1.0 T=4.0 eval_frac=1.0 num_steps=200 method="FBSDE" seed=0 save_model_every=5000 log_every=100 ido.hdims=[[256,128,64],[256,128,64],[256,128,64],[256,128,64]] solver.fbsde_reg=[0,0,0,0.1] compute_control_error_every=100 optim.batch_size=64 run_name="FBSDE" gpu=0 experiment_name=["OU_hard_d20","OU_anisotropic_d20","OU_stable_d20","double_well_d10"]
+
+============ EXPERIMENT 7: TIME HORIZON DEGRADATION ==================
+
+torchrun --master_port=29500 main.py setting="OU_quadratic_hard" d=20 num_iterations=30000 lmbd=1.0 T=[0.5,1.0,1.5,2.0,2.5,3.0,3.5,4.0,4.5,5.0] eval_frac=1.0 num_steps=[25,50,75,100,125,150,175,200,225,250] method="FBSDE" seed=0 save_model_every=75000 log_every=100 ido.hdims=[[256,128,64],[256,128,64],[256,128,64],[256,128,64],[256,128,64],[256,128,64],[256,128,64],[256,128,64],[256,128,64],[256,128,64]] compute_control_error_every=100 optim.batch_size=64 run_name=["T=0.5","T=1.0","T=1.5","T=2.0","T=2.5","T=3.0","T=3.5","T=4.0","T=4.5","T=5.0"] gpu=0 experiment_name="OU_hard_d20_Tscan"
+
+torchrun --master_port=29500 main.py setting="OU_quadratic_hard" d=20 num_iterations=30000 lmbd=1.0 T=[0.5,1.0,1.5,2.0,2.5,3.0,3.5,4.0,4.5,5.0] eval_frac=1.0 num_steps=[25,50,75,100,125,150,175,200,225,250] method="IDO" seed=0 save_model_every=75000 log_every=100 ido.hdims=[[256,128,64],[256,128,64],[256,128,64],[256,128,64],[256,128,64],[256,128,64],[256,128,64],[256,128,64],[256,128,64],[256,128,64]] solver.ido_algorithm='rel_entropy' compute_control_error_every=100 optim.batch_size=64 run_name=["relative_entropy/T=0.5","relative_entropy/T=1.0","relative_entropy/T=1.5","relative_entropy/T=2.0","relative_entropy/T=2.5","relative_entropy/T=3.0","relative_entropy/T=3.5","relative_entropy/T=4.0","relative_entropy/T=4.5","relative_entropy/T=5.0"] gpu=0 experiment_name="OU_hard_d20_Tscan"
+
+torchrun --master_port=29500 main.py setting="OU_quadratic_hard" d=20 num_iterations=30000 lmbd=1.0 T=[0.5,1.0,1.5,2.0,2.5,3.0,3.5,4.0,4.5,5.0] eval_frac=1.0 num_steps=[25,50,75,100,125,150,175,200,225,250] method="IDO" seed=0 save_model_every=75000 log_every=100 ido.hdims=[[256,128,64],[256,128,64],[256,128,64],[256,128,64],[256,128,64],[256,128,64],[256,128,64],[256,128,64],[256,128,64],[256,128,64]] solver.ido_algorithm='SOCM' compute_control_error_every=100 optim.batch_size=64 run_name=["SOCM/T=0.5","SOCM/T=1.0","SOCM/T=1.5","SOCM/T=2.0","SOCM/T=2.5","SOCM/T=3.0","SOCM/T=3.5","SOCM/T=4.0","SOCM/T=4.5","SOCM/T=5.0"] gpu=0 experiment_name="OU_hard_d20_Tscan"
+
+torchrun --master_port=29500 main.py setting="OU_quadratic_hard" d=20 num_iterations=30000 lmbd=1.0 T=[0.5,1.0,1.5,2.0,2.5,3.0,3.5,4.0,4.5,5.0] eval_frac=1.0 num_steps=[25,50,75,100,125,150,175,200,225,250] method="IDO" seed=0 save_model_every=75000 log_every=100 ido.hdims=[[256,128,64],[256,128,64],[256,128,64],[256,128,64],[256,128,64],[256,128,64],[256,128,64],[256,128,64],[256,128,64],[256,128,64]] solver.ido_algorithm='adjoint_matching' compute_control_error_every=100 optim.batch_size=64 run_name=["adjoint_matching/T=0.5","adjoint_matching/T=1.0","adjoint_matching/T=1.5","adjoint_matching/T=2.0","adjoint_matching/T=2.5","adjoint_matching/T=3.0","adjoint_matching/T=3.5","adjoint_matching/T=4.0","adjoint_matching/T=4.5","adjoint_matching/T=5.0"] gpu=0 experiment_name="OU_hard_d20_Tscan"
+
+torchrun --master_port=29500 main.py setting="OU_quadratic_hard" d=20 num_iterations=30000 lmbd=1.0 T=[0.5,1.0,1.5,2.0,2.5,3.0,3.5,4.0,4.5,5.0] eval_frac=1.0 num_steps=[25,50,75,100,125,150,175,200,225,250] method="IDO" seed=0 save_model_every=75000 log_every=100 ido.hdims=[[256,128,64],[256,128,64],[256,128,64],[256,128,64],[256,128,64],[256,128,64],[256,128,64],[256,128,64],[256,128,64],[256,128,64]] solver.ido_algorithm='log-variance' compute_control_error_every=100 optim.batch_size=64 run_name=["log_variance/T=0.5","log_variance/T=1.0","log_variance/T=1.5","log_variance/T=2.0","log_variance/T=2.5","log_variance/T=3.0","log_variance/T=3.5","log_variance/T=4.0","log_variance/T=4.5","log_variance/T=5.0"] gpu=0 experiment_name="OU_hard_d20_Tscan"
