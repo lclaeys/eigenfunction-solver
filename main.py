@@ -1,6 +1,6 @@
 """
 
-Main script for running experiments. Once again, structure is adapted from main.py in https://github.com/facebookresearch/SOC-matching.
+Main script for running experiments. Structure is adapted from main.py in https://github.com/facebookresearch/SOC-matching.
 
 """
 import os
@@ -10,15 +10,12 @@ import torch
 import torch.optim as optim
 import torch.distributed as dist
 import torch.multiprocessing as mp
-import math
 from omegaconf import OmegaConf
 import time
-import pickle
-from copy import deepcopy
 
-from SOC_eigf_old2.method import SOC_Solver
-from SOC_eigf_old2.utils import compute_EMA, stochastic_trajectories, stochastic_trajectories_final, log_normalization_constant, control_objective
-from SOC_eigf_old2.experiment_settings import settings
+from SOC_eigf.method import SOC_Solver
+from SOC_eigf.utils import compute_EMA, stochastic_trajectories, stochastic_trajectories_final, log_normalization_constant, control_objective
+from SOC_eigf.experiment_settings import settings
 
 #torch.autograd.set_detect_anomaly(True)
 
@@ -138,6 +135,9 @@ def main(rank, world_size, args_cfgs):
     else:
         solver.gamma = cfg.ido.gamma
 
+
+    ### Initialization ###
+
     def initialize_optimizers():
         gs_optimizer = None
         eigf_optimizer = None
@@ -207,13 +207,13 @@ def main(rank, world_size, args_cfgs):
         
     gs_optimizer, eigf_optimizer, ido_optimizer, fbsde_optimizer = initialize_optimizers()
 
-
     logged_variables=[
         "itr",
         "iteration_time",
         "loss"
     ]
 
+    ### Logging ###
     if cfg.method == "EIGF":
         logged_variables += ['main_loss', 'orth_loss']
         
@@ -267,6 +267,7 @@ def main(rank, world_size, args_cfgs):
             solver.eigf_loss = 'ritz'
         ritz_steps = cfg.solver.get('ritz_steps',5000)
 
+    ### Training loop ###
     with torch.enable_grad():
         if not cfg.timing:
             torch.save(solver.state_dict(), experiment_path + f'/solver_weights_0.pth')
@@ -279,11 +280,8 @@ def main(rank, world_size, args_cfgs):
 
             if cfg.method == "EIGF":
                 
-                if cfg.solver.trajectory_loss==False:
-                    solver.update_samples(verbose)
-                else:
-                    states, _, _, _, _, _ = stochastic_trajectories(neural_sde, state0, ts, cfg.lmbd, detach=True)
-                    solver.samples = states.reshape(-1,cfg.d).detach()
+                states, _, _, _, _, _ = stochastic_trajectories(neural_sde, state0, ts, cfg.lmbd, detach=True)
+                solver.samples = states.reshape(-1,cfg.d).detach()
 
                 (
                     loss, 
@@ -411,6 +409,8 @@ def main(rank, world_size, args_cfgs):
                 fbsde_optimizer.step()
                 fbsde_optimizer.zero_grad()
 
+            # Logic for assessing eigenvalue convergence
+
             if (cfg.solver.finetune or cfg.eigf.k > 1) and cfg.method == "EIGF" and not eigval_converged:
                 if itr % compute_eigval_every == 0:
                     new_returns = stored_eigval / (prev_stored_eigval.abs() + 1e-2) * prev_stored_eigval.sign() - 1
@@ -444,19 +444,6 @@ def main(rank, world_size, args_cfgs):
                         solver.neural_sde.eigvals[0] = exact_eigvals[0]
                         print('Saved exact eigval.')
 
-                    # copy weights of gs model into es model
-                    # if cfg.eigf.k > 1:
-                    #     with torch.no_grad():
-                    #         for i in range(len(solver.neural_sde.eigf_gs_model.net) - 1):  # skip final layer
-                    #             for target_param, source_param in zip(solver.neural_sde.eigf_model.net[i].parameters(), solver.neural_sde.eigf_gs_model.net[i].parameters()):
-                    #                 target_param.copy_(source_param)
-                            
-                    #         source_last = solver.neural_sde.eigf_gs_model.net[-1][0]  # get nn.Linear
-                    #         target_last = solver.neural_sde.eigf_model.net[-1][0]  # get nn.Linear
-
-                    #         target_last.weight[:cfg.eigf.k-1].copy_(source_last.weight)
-                    #         target_last.bias[:cfg.eigf.k-1].copy_(source_last.bias)
-            
             if cfg.eigf.k > 1 and cfg.method == "EIGF":
                 if itr % compute_eigval_every == 0:
                     prev_stored_eigval_1 = stored_eigval_1.clone()
@@ -465,6 +452,7 @@ def main(rank, world_size, args_cfgs):
                     i = itr % compute_eigval_every
                     stored_eigval_1 = stored_eigval_1 * i / (i+1) + solver.neural_sde.eigvals[1] / (i+1)
 
+            ### Evaluation ###
             with torch.no_grad():
                 end = time.time()
                 logs['iteration_time'][itr] = end - start
@@ -532,7 +520,6 @@ def main(rank, world_size, args_cfgs):
 
                         predicted_grad_log_fx = gs_Dfx.detach().cpu()
 
-                        #predicted_fx_norm = torch.mean(predicted_fx**2).sqrt()
                         if solver.neural_sde.confining:
                             l2_err = torch.mean((exact_fx - predicted_fx)**2)
                         else:
@@ -544,7 +531,6 @@ def main(rank, world_size, args_cfgs):
 
                         logs['grad_log_eigf_error'][itr] = l2_err_grad_log
 
-                        eigval_error = (exact_eigvals[0] - solver.neural_sde.eigvals[0])**2
                         print(f'Iteration {itr} {cfg.run_name} [GROUND STATE]: error {l2_err:.3E} | gradlog error {l2_err_grad_log.detach().squeeze():.3E} | loss {loss.detach().squeeze():.3E} | orth loss {orth_loss.detach().squeeze():.3E}')
                         
                         if cfg.eigf.k > 1 and es_loss is not None:

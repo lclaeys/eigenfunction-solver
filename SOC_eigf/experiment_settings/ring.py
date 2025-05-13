@@ -1,11 +1,11 @@
 """
 
-Model set up for ring setting.
+Model setup for ring setting.
 
 """
 import torch
 
-from SOC_eigf_old2.method import NeuralSDE
+from SOC_eigf.method import NeuralSDE
 
 class Ring(NeuralSDE):
     def __init__(

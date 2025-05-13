@@ -5,7 +5,7 @@ This repository contains the code used for the paper "A Schrödinger Eigenfuncti
 
 To install the required libraries, run `pip install -r requirements.txt`. 
 
-The folder `SOC_eigf` contains the code of the method, and the file `main.py` can be used to run experiments. The configuration of the experiment should be specified in the `experiment_cfg.yaml` file or otherwise specified using flags. To run multiple experiments in parallel, pass a list as one or more of the arguments. For instace, running 
+The folder `SOC_eigf` contains the code of the method, and the file `main.py` can be used to run experiments. The configuration of the experiment should be specified in the `experiment_cfg.yaml` file or otherwise specified using flags. To run multiple experiments in parallel, pass a list as one or more of the arguments. For example, running 
 
 ```
 torchrun --master_port=29500 main.py setting="double_well" d=10 method="EIGF" solver.eigf_loss=["ritz","rel"] gpu=[0,1] run_name=["ritz_test","rel_test"] experiment_name="double_well_d10"

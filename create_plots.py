@@ -1,3 +1,10 @@
+"""
+
+Script used to create all of the plots presented in the paper.
+Edit the last part to plot a subset of the figures.
+
+"""
+
 import pandas as pd
 import numpy as np
 import torch
@@ -5,16 +12,18 @@ import seaborn as sns
 import matplotlib.pyplot as plt
 import matplotlib.cm as cm
 import matplotlib.colors as mcolors
-from matplotlib.colors import PowerNorm  # or SymLogNorm
+from matplotlib.colors import PowerNorm
 
 from omegaconf import OmegaConf
 
-from SOC_eigf_old2.experiment_settings.settings import define_variables
-from SOC_eigf_old2.utils import stochastic_trajectories, control_objective
-from SOC_eigf_old2.method import SOC_Solver
+from SOC_eigf.experiment_settings.settings import define_variables
+from SOC_eigf.utils import stochastic_trajectories, control_objective
+from SOC_eigf.method import SOC_Solver
 
 device = 'cuda:0'
+
 def load_eigf_df(experiment_name, run_names):
+    
     dfs = []
     for run_name in run_names:
         df = pd.read_csv(f'experiments/{experiment_name}/EIGF/{run_name}/logs.csv')
@@ -31,13 +40,13 @@ def load_eigf_df(experiment_name, run_names):
         if 'error' in column or 'loss' in column:
             df[f'{column}_EMA'] = (
                 df.groupby('run_name')[column]
-                #.transform(lambda x: np.exp(x.apply(lambda x: np.log(x)).ewm(halflife=EMA_halflife, adjust=False).mean()))
                 .transform(lambda x: x.ewm(halflife=EMA_halflife, adjust=False).mean())
             )
     
     return df
 
 def load_ido_df(experiment_name, run_names):
+    
     dfs = []
     for run_name in run_names:
         df = pd.read_csv(f'experiments/{experiment_name}/IDO/{run_name}/logs.csv')
@@ -68,13 +77,13 @@ def load_ido_df(experiment_name, run_names):
         if 'error' in column or 'loss' in column:
             df[f'{column}_EMA'] = (
                 df.groupby('run_name')[column]
-                #.transform(lambda x: np.exp(x.apply(lambda x: np.log(x)).ewm(halflife=EMA_halflife, adjust=False).mean()))
                 .transform(lambda x: x.ewm(halflife=EMA_halflife, adjust=False).mean())
             )
 
     return df
 
 def plot_eigf(experiment_name, run_names, title=None, df = None, iters=None):
+    
     if df is None:
         df = load_eigf_df(experiment_name, run_names)
     
@@ -93,7 +102,6 @@ def plot_eigf(experiment_name, run_names, title=None, df = None, iters=None):
                     run_df.plot(x=index,y='grad_log_eigf_error'+col_appendix, color='red', ax = axes[i],label=r"$\|\nabla\log f-\nabla \log\phi\|_{\mu}^2$")
                 run_df.plot(x=index,y='control_l2_error'+col_appendix, color='green', ax = axes[i],label=r"Control $L^2$ error")
 
-                #ax[i].set_title("$\|f-\phi\|_{\mu}^2$")
                 axes[i].set_title(run_names[i],fontsize=18)
                 axes[i].set_yscale('log')
                 axes[i].grid()
@@ -132,7 +140,6 @@ def plot_eigf(experiment_name, run_names, title=None, df = None, iters=None):
             run_df.drop_duplicates('control_objective_mean',inplace=True)
             run_df.plot(x=index,y='control_objective_mean'+col_appendix, yerr='control_objective_std'+col_appendix, ax = ax, label=f'{labels[run_names[i]]}',capsize=4)
             
-            #ax.set_yscale('log')
             ax.set_xlim(0,iters)
             ax.grid()
             ax.set_xlabel('Time (s)' if index=="time" else "Iteration")
@@ -166,28 +173,23 @@ def plot_eigf(experiment_name, run_names, title=None, df = None, iters=None):
             ax.set_xlabel('Time (s)' if index=="time" else "Iteration")
             ax.set_ylabel(r"$\|\nabla\log \hat\phi_0-\nabla \log\phi_0\|_{\mu}^2$")
             
-            #ax.set_ylim(1e-4,10)
             plt.title(title,fontsize=18)
-            #plt.legend(loc='upper right', fontsize=14)
             ax.legend().set_visible(False)
 
             plt.tight_layout()
             plt.savefig(f'figures/{experiment_name}_eigf_gradlog.png', bbox_inches='tight')
             print(f'Successfully saved {experiment_name}_eigf_gradlog.png')
             
-            # 2. Grab handles & labels
             handles, labels = plt.gca().get_legend_handles_labels()
 
-            # 3. New figure for the legend
-            plt.figure(figsize=(4, 1))               # wider to fit them side by side
+            plt.figure(figsize=(4, 1))               
             plt.legend(handles, labels,
-                    loc='center',                 # middle of the figure
-                    ncol=len(labels),             # one column per entry
-                    frameon=False)                # optional: remove box
+                    loc='center',                 
+                    ncol=len(labels),             
+                    frameon=False)
             plt.axis('off')
             plt.tight_layout()
 
-            # 4. Save
             plt.savefig("figures/eigf_legend.png",
                         dpi=300,
                         transparent=True,
@@ -210,7 +212,6 @@ def plot_ido(experiment_name, run_names, title = None, not_converged = [], df = 
     for run in not_converged:
         run_names.remove(run)
         
-    print(run_names)
     with plt.rc_context({'font.size': 14}):
         fig, ax = plt.subplots(figsize=(5,5))
 
@@ -258,13 +259,10 @@ def plot_ido(experiment_name, run_names, title = None, not_converged = [], df = 
                 run_df.plot(x=index,y='control_l2_error'+col_appendix, ax = ax, label=f'{labels[run_names[i]]}', ls=ls[i],color=colors[i])
 
         ax.set_yscale('log')
-        #ax.set_xscale('log')
         ax.grid()
         ax.set_xlabel('Time (s)' if index=="time" else "Iteration")
         ax.set_ylabel('Control $L^2$ error')
         
-        #ax.set_ylim(1e-4,10)
-        #plt.legend(fontsize=14)
         ax.legend().set_visible(False)
         plt.title(title,fontsize=18)
         plt.tight_layout()
@@ -274,16 +272,14 @@ def plot_ido(experiment_name, run_names, title = None, not_converged = [], df = 
         if experiment_name == "OU_stable_d20":        
             handles, labels = plt.gca().get_legend_handles_labels()
 
-            ## First row 
-            plt.figure(figsize=(4, 1))               # wider to fit them side by side
+            plt.figure(figsize=(4, 1))              
             plt.legend(handles[:-4], labels[:-4],
-                    loc='center',                 # middle of the figure
-                    ncol=len(labels[:-4]),             # one column per entry
-                    frameon=False)                # optional: remove box
+                    loc='center',                 
+                    ncol=len(labels[:-4]),
+                    frameon=False) 
             plt.axis('off')
             plt.tight_layout()
 
-            # 4. Save
             plt.savefig("figures/control_l2_legend_1.png",
                         dpi=300,
                         transparent=True,
@@ -291,16 +287,14 @@ def plot_ido(experiment_name, run_names, title = None, not_converged = [], df = 
             
             fig, ax = plt.subplots(figsize=(5,5))
 
-            ## Second row 
-            plt.figure(figsize=(4, 1))               # wider to fit them side by side
+            plt.figure(figsize=(4, 1))
             plt.legend(handles[-4:], labels[-4:],
-                    loc='center',                 # middle of the figure
-                    ncol=len(labels[-4:]),             # one column per entry
-                    frameon=False)                # optional: remove box
+                    loc='center',               
+                    ncol=len(labels[-4:]),      
+                    frameon=False)
             plt.axis('off')
             plt.tight_layout()
 
-            # 4. Save
             plt.savefig("figures/control_l2_legend_2.png",
                         dpi=300,
                         transparent=True,
@@ -347,8 +341,6 @@ def plot_ido(experiment_name, run_names, title = None, not_converged = [], df = 
             if experiment_name == "OU_hard_d20":
                 ax.set_yscale('log')
                 ax.set_ylim(1e2,1e4)
-            #ax.set_yscale('log')
-            #ax.set_xlim(0,iters)
             ax.grid()
             ax.set_xlabel('Time (s)' if index=="time" else "Iteration")
             ax.set_ylabel('Control objective')
@@ -438,7 +430,6 @@ def plot_error_over_time(experiment_name, run_names, title=None, not_converged =
                 solver.load_state_dict(torch.load(f'experiments/{experiment_name}/{run_names[i]}/solver_weights_{itrs[i]:_}.pth',map_location=device),strict=True)
             learned_control = solver.neural_sde.control(ts[:-1],states[:-1]).cpu()
             norm_sqd_diff = torch.sum((target_control - learned_control) ** 2,dim=-1).mean(dim=1)
-            norm_sqd_diff_err = torch.std((target_control - learned_control) ** 2,dim=-1).mean(dim=1)
             ax.plot(ts[:-1].cpu(),norm_sqd_diff.detach().cpu(),label=labels[i],color=colors[i],ls=ls[i])
 
     plt.yscale('log')
@@ -497,8 +488,7 @@ def plot_ring():
             if 'error' in column or 'loss' in column:
                 df[f'{column}_EMA'] = (
                     df.groupby('run_name')[column]
-                    .transform(lambda x: np.exp(x.apply(lambda x: np.log(x)).ewm(halflife=EMA_halflife, adjust=False).mean()))
-                    #.transform(lambda x: x.apply(lambda x: x.ewm(halflife=EMA_halflife, adjust=False).mean()))
+                    .transform(lambda x: x.apply(lambda x: x.ewm(halflife=EMA_halflife, adjust=False).mean()))
                 )
 
         print(df.columns)
@@ -547,17 +537,12 @@ def plot_ring():
             axes[j].set_ylabel("Y Position")
             axes[j].set_title(labels[run_names[j]])
 
-            # Ensure equal aspect ratio
-            #ax.set_aspect('equal', adjustable='box')
             axes[j].set_xlim(-5,5)
             axes[j].set_ylim(-5,5)
 
-            #axes[j].legend()
             axes[j].grid()
-        #plt.suptitle('Control inputs')
         plt.savefig(f'figures/ring_d2_controls.png', bbox_inches='tight')
 
-        # --- 1) build your common grid in advance ---
         r, delta = 2.5, 0.5
         n_rho, n_theta = 100, 200
 
@@ -572,7 +557,6 @@ def plot_ring():
         X_np = X.cpu().numpy()
         Y_np = Y.cpu().numpy()
 
-        # --- 2) compute global mins/maxs ---
         raw_min, raw_max = float('inf'), float('-inf')
         log_min, log_max = float('inf'), float('-inf')
 
@@ -588,7 +572,6 @@ def plot_ring():
             raw_min, raw_max = min(raw_min, Z_raw.min()), max(raw_max, Z_raw.max())
             log_min, log_max = min(log_min, Z_log.min()), max(log_max, Z_log.max())
 
-        # --- 3) plotting with shared limits, bigger fonts, no z‑label ---
         n_runs = len(run_names)
         fig, axes = plt.subplots(2, n_runs,
                                 subplot_kw={'projection': '3d'},
@@ -602,20 +585,17 @@ def plot_ring():
                 ax1, ax2 = axes[0,j], axes[1,j]
             Z_raw, Z_log = Zs_raw[j], Zs_log[j]
 
-            # --- raw eigenfunction ---
             surf1 = ax1.plot_surface(X_np, Y_np, Z_raw, cmap='viridis')
             ax1.set_xlim(X_np.min(), X_np.max())
             ax1.set_ylim(Y_np.min(), Y_np.max())
             ax1.set_zlim(raw_min, raw_max)
             ax1.set_xlabel('x', fontsize=14)
             ax1.set_ylabel('y', fontsize=14)
-            # remove or hide z‑axis label
             ax1.zaxis.label.set_visible(False)
             ax1.set_title(f'{labels[run_name]} — eigenfunction', fontsize=16)
             ax1.tick_params(labelsize=12)
             ax1.view_init(elev=30, azim=225)
 
-            # --- log eigenfunction ---
             surf2 = ax2.plot_surface(X_np, Y_np, Z_log, cmap='viridis')
             ax2.set_xlim(X_np.min(), X_np.max())
             ax2.set_ylim(Y_np.min(), Y_np.max())
@@ -631,14 +611,11 @@ def plot_ring():
         plt.savefig(f'figures/ring_d2_eigf.png', bbox_inches='tight')
         print(f'Successfully saved ring_d2_eigf.png')
 
-        # --- parameters ---
         x_lim, y_lim = (-5, 5), (-5, 5)
         bg_res = 200
         heat_cmap = "viridis"
         heat_alpha = 0.6
 
-        # 1) PRE‐COMPUTE ALL Z GRIDS TO FIND GLOBAL vmin/vmax -------------------
-        #    This makes two loops, but for bg_res=200 it's still very fast.
         Z_list = []
         xs = torch.linspace(*x_lim, bg_res, device=ts.device)
         ys = torch.linspace(*y_lim, bg_res, device=ts.device)
@@ -651,13 +628,11 @@ def plot_ring():
                 Z = -solver.neural_sde.eigf_gs_model(XY).squeeze(-1)
                 Z_list.append(Z.cpu().reshape(bg_res, bg_res))
 
-        # compute global min/max
         all_Z = torch.stack([z.flatten() for z in Z_list])
 
         z_min, z_max = float(all_Z.min()), float(all_Z.max())
         norm = PowerNorm(gamma=0.4, vmin=z_min, vmax=z_max)
 
-        # 2) PLOT EACH SUBPLOT WITH THE SHARED SCALE ---------------------------
         fig, axes = plt.subplots(1, len(run_names), figsize=(5 * len(run_names), 5), sharey=True, sharex=True)
         if len(run_names) == 1:
             axes = [axes]
@@ -666,7 +641,6 @@ def plot_ring():
             solver = solvers[run]
             Z = Z_list[j]
 
-            # heatmap with common vmin/vmax
             im = axes[j].imshow(
                 Z.T,
                 extent=[*x_lim, *y_lim],
@@ -679,7 +653,6 @@ def plot_ring():
                 label = 'Learned value function'
             )
 
-            # control‐vector quiver (unchanged)
             num_angles = 50
             angles = torch.linspace(0, 2*np.pi, num_angles, device=ts.device)
             rs = torch.linspace(4.5, 5.5, 3, device=ts.device)
@@ -699,7 +672,6 @@ def plot_ring():
                 color="black", alpha=1.0, zorder=1
             )
 
-            # labels & styling
             axes[j].set_xlabel("X position")
             axes[j].set_ylabel("Y position")
             axes[j].set_title(labels[run])
@@ -707,17 +679,15 @@ def plot_ring():
             axes[j].set_ylim(*y_lim)
             axes[j].grid(True)
 
-        # 3) SHARED COLORBAR ----------------------------------------------------
         cbar = fig.colorbar(
             im, ax=axes,
             orientation="vertical",
             fraction=0.02, pad=0.04,
             location="right"
         )
-        cbar.set_label("Learned value function $V_0$")  # new label
+        cbar.set_label("Learned value function $V_0$")
 
         plt.suptitle("Learned control inputs and $V_0$")
-        #plt.tight_layout()
         plt.savefig(f'figures/ring_d2_visualization.png', bbox_inches='tight')
         print(f'Successfully saved ring_d2_visualization.png')
 
@@ -753,7 +723,6 @@ def plot_exact_eigf():
     ks = np.arange(1,max_k,step)
     colors = [colormap(i / (len(ks) - 1)) for i in range(len(ks))]
 
-    # Normalize the color map to the range of ks
     norm = mcolors.Normalize(vmin=ks.min(), vmax=ks.max())
     sm = cm.ScalarMappable(cmap=colormap, norm=norm)
     sm.set_array([])  # Needed for the colorbar
@@ -765,7 +734,6 @@ def plot_exact_eigf():
         ax.plot(ts[:-1].cpu(), err, color=color)
         ax.set_yscale('log')
 
-    # Add colorbar
     cbar = fig.colorbar(sm, ax=ax)
     cbar.set_label('Number of eigenfunctions')
     ax.set_ylabel('Control error $\|u-u^*\|^2$')
@@ -777,7 +745,6 @@ def plot_exact_eigf():
     print(f'Successfully saved exact_eigf_solution.png')
 
 def plot_horizon_degradation():
-
     # Compute for fully converged rel entropy method
     cfg = OmegaConf.load(f'experiments/OU_hard_d20/COMBINED/rel_entropy/cfg.yaml')
     cfg.device = device
@@ -869,7 +836,6 @@ def plot_horizon_degradation():
         'IDO/relative_entropy': 'Relative entropy (IDO)'
         })
     
-    # Function to compute mean and 5–95% quantiles for last 1000 iterations
     def last_1000_stats(group):
         last_1000 = group.sort_values('itr')[29000:30000]['control_l2_error']
         return pd.Series({
@@ -878,7 +844,6 @@ def plot_horizon_degradation():
             'q95_error': last_1000.quantile(0.95)
         })
 
-    # Apply the function
     grouped = df.groupby(['algo', 'T']).apply(last_1000_stats).reset_index()
 
     grouped = pd.concat([grouped, combined_df])
@@ -889,11 +854,9 @@ def plot_horizon_degradation():
             'FBSDE': 'green',
             'EIGF+IDO (ours)': 'black'}
 
-    # Compute lower and upper error bounds for asymmetric error bars
     grouped['yerr_lower'] = grouped['mean_l2_error'] - grouped['q05_error']
     grouped['yerr_upper'] = grouped['q95_error'] - grouped['mean_l2_error']
 
-    # Plot with asymmetric error bars
     plt.figure(figsize=(5, 5))
     for algo in grouped['algo'].unique():
         subset = grouped[grouped['algo'] == algo]
@@ -926,7 +889,6 @@ def plot_horizon_degradation():
             'q95_error': our_time.quantile(0.95),
             'T': np.linspace(0.5,5,10)})
     
-    # Function to compute mean and 5–95% quantiles for last 1000 iterations
     def last_1000_stats(group):
         last_1000 = group.sort_values('itr')[1000:5000]['iteration_time']
         return pd.Series({
@@ -935,14 +897,11 @@ def plot_horizon_degradation():
             'q95_error': last_1000.quantile(0.95)
         })
 
-    # Apply the function
     grouped = df.groupby(['algo', 'T']).apply(last_1000_stats).reset_index()
     grouped = pd.concat([grouped, our_df])
-    # Compute lower and upper error bounds for asymmetric error bars
     grouped['yerr_lower'] = grouped['mean_l2_error'] - grouped['q05_error']
     grouped['yerr_upper'] = grouped['q95_error'] - grouped['mean_l2_error']
 
-    # Plot with asymmetric error bars
     plt.figure(figsize=(5,5))
     for algo in grouped['algo'].unique():
         subset = grouped[grouped['algo'] == algo]
@@ -967,40 +926,39 @@ def plot_horizon_degradation():
     plt.savefig(f'figures/long_horizon_iteration_time.png', bbox_inches='tight')
     print(f'Successfully saved long_horizon_iteration_time.png')
 
-    # 2. Grab handles & labels
     handles, labels = plt.gca().get_legend_handles_labels()
 
-    # 3. New figure just for legend
     plt.figure(figsize=(2,1))
     plt.legend(handles, labels, loc='center')
-    plt.axis('off')            # hide any axes/frame
+    plt.axis('off')
     plt.tight_layout()
 
-    # 4. Save it
     plt.savefig("figures/legend_only.png", dpi=300, transparent=True, bbox_inches='tight')
 
-experiment_names = ['OU_stable_d20', 'OU_hard_d20', 'OU_anisotropic_d20', 'double_well_d10']
-titles = ['Quadratic (isotropic) (d=20)', 'Quadratic (repulsive) (d=20)', 'Quadratic (anisotropic) (d=20)', 'Double well (d=10)']
-iters = [80000,25000,80000,80000]
+if __name__ == "__main__":
+    
+    experiment_names = ['OU_stable_d20', 'OU_hard_d20', 'OU_anisotropic_d20', 'double_well_d10']
+    titles = ['Quadratic (isotropic) (d=20)', 'Quadratic (repulsive) (d=20)', 'Quadratic (anisotropic) (d=20)', 'Double well (d=10)']
+    iters = [80000,25000,80000,80000]
 
-run_names_list = [['var_GELU','ritz_GELU','pinn_GELU','rel_GELU']] * 4
+    run_names_list = [['var_GELU','ritz_GELU','pinn_GELU','rel_GELU']] * 4
 
-ido_run_names = ['rel_entropy','log_variance','SOCM','adjoint_matching']
+    ido_run_names = ['rel_entropy','log_variance','SOCM','adjoint_matching']
 
-not_converged = [[],['COMBINED/log_variance','COMBINED/adjoint_matching'],['COMBINED/log_variance'],['COMBINED/log_variance','COMBINED/adjoint_matching','COMBINED/SOCM','COMBINED/rel_entropy']]
-#plot_ring()
-for i in range(len(experiment_names)):
-    #plot_eigf(experiment_names[i], run_names_list[i], iters=iters[i],title=titles[i])
-
-    plot_ido(experiment_names[i], ido_run_names, titles[i], not_converged[i])
+    not_converged = [[],['COMBINED/log_variance','COMBINED/adjoint_matching'],['COMBINED/log_variance'],['COMBINED/log_variance','COMBINED/adjoint_matching','COMBINED/SOCM','COMBINED/rel_entropy']]
 
     over_time_names = [f'IDO/{ido_run}' for ido_run in ido_run_names] + [f'COMBINED/{ido_run}' for ido_run in ido_run_names] + ['EIGF/rel_GELU']
-    
-    #plot_error_over_time(experiment_names[i],over_time_names,titles[i], not_converged[i])
 
-    pass
+    plot_horizon_degradation()
+    plot_ring()
 
-#plot_eigf('ring_d2',run_names_list[0],iters=20000,title="Ring (d=2)")
+    for i in range(len(experiment_names)):
+        plot_eigf(experiment_names[i], run_names_list[i], iters=iters[i],title=titles[i])
 
-#plot_exact_eigf()
-#plot_horizon_degradation()
+        plot_ido(experiment_names[i], ido_run_names, titles[i], not_converged[i])
+
+        plot_error_over_time(experiment_names[i],over_time_names,titles[i], not_converged[i])
+
+    plot_eigf('ring_d2',run_names_list[0],iters=20000,title="Ring (d=2)")
+
+    plot_exact_eigf()

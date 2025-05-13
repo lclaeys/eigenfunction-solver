@@ -1,8 +1,9 @@
 """
 
-Model set up for quadratic case. Base code adapted from https://github.com/facebookresearch/SOC-matching.
+Model setup for quadratic setting. Base code adapted from https://github.com/facebookresearch/SOC-matching.
 
 Adapted to fit in our framework, and added exact solution for eigenfunctions of symmetric OU operator.
+Note: this implementation uses the probabilist's Hermite polynomials, NOT physicist's.
 
 """
 
@@ -12,7 +13,7 @@ import torch
 import numpy as np
 import heapq
 
-from SOC_eigf_old2.method import NeuralSDE
+from SOC_eigf.method import NeuralSDE
 
 from scipy.special import eval_hermitenorm
 from scipy.special import factorial

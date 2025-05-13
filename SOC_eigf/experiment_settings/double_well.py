@@ -1,6 +1,8 @@
 """
 
-Model set up for double well setting.
+Model setup for double well setting. Base code adapted from https://github.com/facebookresearch/SOC-matching.
+
+Adapted to fit in our framework, and added finite difference discretization for running cost.
 
 """
 import torch
@@ -8,7 +10,7 @@ import numpy as np
 from scipy.linalg import solve_banded
 
 
-from SOC_eigf_old2.method import NeuralSDE
+from SOC_eigf.method import NeuralSDE
 
 class DoubleWell(NeuralSDE):
     def __init__(
@@ -148,9 +150,6 @@ class DoubleWell(NeuralSDE):
         energy_vec_mid = self.scalar_potential(xvec_mid, idx, cpu=True)
         energy_vec = self.scalar_potential(xvec, idx, cpu=True)
 
-        #M = np.array([np.concatenate([[0],weight_vec_mid[1:-1]]), weight_vec_mid[1:] + weight_vec_mid[:-1], np.concatenate([weight_vec_mid[1:-1],[0]])]) * delta_x / 4
-        #A_base = np.array([np.concatenate([[0],-weight_vec_mid[1:-1]]), weight_vec_mid[1:] + weight_vec_mid[:-1], np.concatenate([-weight_vec_mid[1:-1],[0]])]) / delta_x
-        
         D = np.exp(energy_vec / self.lmbd)
         D_inv = np.exp(-energy_vec / self.lmbd)
 

@@ -10,24 +10,12 @@ import numpy as np
 import nvidia_smi
 import functorch
 
-from SOC_eigf_old2.models import FullyConnectedUNet, FullyConnectedUNet2, SIREN, GaussianNet, SigmoidMLP, GELUNET, SIRENUNET, GaussUNET, GenericNetFactory
-from SOC_eigf_old2.utils import mala_samples, stochastic_trajectories, compute_EMA
+from SOC_eigf.models import FullyConnectedUNet, FullyConnectedUNet2, SigmoidMLP, GELUNET
+from SOC_eigf.utils import mala_samples, stochastic_trajectories, compute_EMA
 
 class NeuralSDE(nn.Module):
     """
     Class that contains the models and SDE parameters.
-
-    eigf_cfg:
-        k: number of eigenfunctions to compute
-        hdims: hidden layer dimensions for eigenfunction model
-        arch: activation function to use {'SIREN', 'GAUSS'}
-
-    ido_cfg:
-        hdims: hidden layer dimensions for control
-        hdims_M: hidden layer dimensions for M matrix (for SOCM method)
-        gamma{,2,3}: gamma parameters
-        scaling_factor_nabla_V: init scaling for nabla_V
-        scaling_factor_M: init scaling for M
     """
     def __init__(
         self,
@@ -101,18 +89,10 @@ class NeuralSDE(nn.Module):
     def initialize_models(self):
         # Use learned control in the stochastic_trajectories function
         self.use_learned_control = True
-        network_modules = {'SIREN': SIREN, 
-                           'GAUSS': GaussianNet, 
-                           'GELUNET': GELUNET, 
-                           'SIRENUNET': SIRENUNET, 
-                           'GaussUNET': GaussUNET,
-                           'RELU': GenericNetFactory(activation=nn.ReLU),
-                           'TANH': GenericNetFactory(activation=nn.Tanh),
-                           'GELU': GenericNetFactory(activation=nn.GELU)}
 
         if self.method in ['EIGF', 'COMBINED']:
             # ground state model
-            self.eigf_gs_model = network_modules[self.arch_eigf](
+            self.eigf_gs_model = GELUNET(
                     dim=self.dim,
                     hdims=self.hdims_eigf,
                     k = 1,
@@ -120,7 +100,7 @@ class NeuralSDE(nn.Module):
                     ).to(self.device)            
             
             if self.k > 1 and self.method == "EIGF":
-                self.eigf_model = network_modules[self.arch_eigf](
+                self.eigf_model = GELUNET(
                     dim=self.dim,
                     hdims=self.hdims_eigf,
                     k = self.k-1,
@@ -197,7 +177,7 @@ class NeuralSDE(nn.Module):
                 scaling_factor=self.scaling_factor_nabla_V,
                 ).to(self.device)
             else:
-                self.ido_model = network_modules[self.arch_eigf](
+                self.ido_model = GELUNET(
                     dim=self.dim+1,
                     hdims=self.hdims_ido,
                     k = 1
@@ -235,11 +215,6 @@ class NeuralSDE(nn.Module):
         t_rev = self.T - t
         
         if self.method == "COMBINED":
-            if torch.all(t < self.T - self.T_cutoff):
-                eigf_only = True
-            else:
-                eigf_only = False
-
             # Determine indices that use IDO model (after T-T_cutoff)
             if len(t.shape) >= 1:
                 ido_idx = torch.clamp(torch.searchsorted(t,self.T - self.T_cutoff),min=1)-1 # find cutoff index
@@ -426,17 +401,8 @@ class SOC_Solver(nn.Module):
     """
     def gs_loss(
         self,
-        rel_loss_norm=1.0,
-        pinn_loss_norm=1.0,
-        itr=1,
         verbose=False
     ):
-        if self.neural_sde.confining:
-            log_importance_weight = torch.zeros(self.samples.shape[0], device=self.device)
-        else:
-            Ex = self.neural_sde.energy(self.samples)
-            log_importance_weight = -2 * Ex * 2 / self.lmbd
-
         if self.eigf_loss not in ['rel','pinn']:
             Dfx, fx = self.neural_sde.eigf_gs_model_jac(self.samples)
         else:
@@ -448,26 +414,17 @@ class SOC_Solver(nn.Module):
             orth_loss = (1-sq_f_norm)**2
         else:
             orth_loss = sq_f_norm.log()**2
-        
-        # if (orth_loss - 1.0).abs() < 0.1:
-        #     reg_loss = (Dfx**2).mean() / (fx**2).mean()
-        #     min_log_var = -2
-        #     nonconst_reg = -1 * torch.log(reg_loss).clip(max=min_log_var) + min_log_var
-
-        #     orth_loss = orth_loss + torch.relu(0.1-(orth_loss-1.0).abs()) * 10 * nonconst_reg
 
         if self.eigf_loss in ['var','ritz']:
             Rx = self.neural_sde.f(None,self.samples) * 2 / self.lmbd**2
 
             grad_norm = torch.norm(Dfx, dim=2,p=2).clip(min=1e-8)
             
-            # <\nabla f, \nabla f>_mu
             sq_grad_norm = torch.logsumexp(2*fx[:,0] + 2*grad_norm[:,0].log(),dim=0).exp() / fx.shape[0]
 
             Rx = torch.clip(torch.abs(Rx),min=1e-8) * torch.sign(Rx)
             R_pos_idx = Rx.squeeze() > 0
             
-            # <f, Rf>_mu
             R_norm = (torch.logsumexp(2*fx[R_pos_idx,0] + Rx[R_pos_idx].log(),dim=0).exp() - torch.logsumexp(2*fx[~R_pos_idx,0] + (-Rx[~R_pos_idx]).log(),dim=0).exp()) / fx.shape[0]
 
             var_loss = sq_grad_norm + R_norm
@@ -546,7 +503,6 @@ class SOC_Solver(nn.Module):
         self,
         gs_fx,
         gs_Dfx,
-        verbose=False
     ):
         Dfx, fx = self.neural_sde.eigf_model_jac(self.samples)
 
@@ -556,28 +512,17 @@ class SOC_Solver(nn.Module):
 
         grad_norm = torch.norm(Dfx, dim=2,p=2)
 
-        # inner prods with each other
         f_cov = torch.mean(fx[:,None,:] * fx[:,:,None] * importance_weight[:,None,None],dim=0)
 
-        # inner prods with scaled gs
         if (1 - self.beta * self.neural_sde.eigvals[0] / 2) <= 0:
             self.beta = 1/self.neural_sde.eigvals[0]
 
         gs_cov = torch.mean((gs_fx).exp() * fx * importance_weight[:,None],dim=0) * (1 - self.beta * self.neural_sde.eigvals[0] / 2).sqrt()
 
         orth_loss = ((f_cov - torch.eye(f_cov.shape[0],device=self.device))**2).sum() + 2*(gs_cov**2).sum()
-        # if (orth_loss - 1.0).abs() < 0.1:
-        #     reg_loss = fx.var() / (fx**2).mean()
-        #     min_log_var = 0
-        #     nonconst_reg = -1 * torch.log(reg_loss).clip(max=min_log_var) + min_log_var
-
-        #     orth_loss = orth_loss + torch.relu(0.1-(orth_loss-1.0).abs()) * 10 * nonconst_reg
-
         
-        # <\nabla f, \nabla f>_mu
         sq_grad_norm = (grad_norm**2 * importance_weight[:,None]).mean(dim=0).sum()
                 
-        # <f, Rf>_mu
         R_norm = torch.mean(fx**2 * Rx[:,None] * importance_weight[:,None],dim=0).sum()
 
         var_loss = sq_grad_norm + R_norm
@@ -1095,6 +1040,9 @@ class SOC_Solver(nn.Module):
             torch.std(weight),
         )
 
+    """
+    Loss for deep FBSDE method
+    """
     def fbsde_loss(
         self,
         reg = 1.0,
@@ -1120,41 +1068,30 @@ class SOC_Solver(nn.Module):
 
         noises = noises * sqrt_dts[:,None,None]
         
-        X_N     = states[-1]                 # (B, d)
-        g_X_N   = self.neural_sde.g(X_N)     # (B,)
+        X_N     = states[-1]                 
+        g_X_N   = self.neural_sde.g(X_N)
 
-        # driver f(t_n, X_n, Z_n) for all n
-        f_all = self.neural_sde.f(self.ts, states)[:-1] + 1/2 * Z_all.norm(dim=-1)**2    # (N, B)
+        f_all = self.neural_sde.f(self.ts, states)[:-1] + 1/2 * Z_all.norm(dim=-1)**2
 
-        # < Z_n , ΔW_n >
-        z_dot_dw = (Z_all * noises).sum(-1)                # (N, B)
+        z_dot_dw = (Z_all * noises).sum(-1)
 
-        # ∫ f h  and  Σ ⟨Z,ΔW⟩
-        int_fh     = (f_all * dts.unsqueeze(1)).sum(0)           # (B,)
-        sum_z_dw   = z_dot_dw.sum(0)                            # (B,)
+        int_fh     = (f_all * dts.unsqueeze(1)).sum(0)
+        sum_z_dw   = z_dot_dw.sum(0)
 
-        # ------------------------------------------------------------------
-        # 2) split into mean-batch (m=0…Mbatch-1) and var-batch (m=Mbatch…)
-        # ------------------------------------------------------------------
-        # ----  first half : compute stochastic costs -------------
+        Y0_first  = g_X_N[:Mbatch] + int_fh[:Mbatch] - sum_z_dw[:Mbatch]
 
-        Y0_first  = g_X_N[:Mbatch] + int_fh[:Mbatch] - sum_z_dw[:Mbatch]               # (B,)
+        Y0_init = g_X_N[:Mbatch].mean()         
 
-        # ----  second half : propagate from the *mean* -----------
-        Y0_init = g_X_N[:Mbatch].mean()                         # scalar (keeps grad)
+        f_2    = f_all[:, Mbatch:]           
+        z_dw_2 = z_dot_dw[:, Mbatch:]         
+        g_2    = g_X_N[Mbatch:]
 
-        # paths for second half
-        f_2    = f_all[:, Mbatch:]            # (N, Mbatch)
-        z_dw_2 = z_dot_dw[:, Mbatch:]         # (N, Mbatch)
-        g_2    = g_X_N[Mbatch:]               # (Mbatch,)
-
-        # Y_N for second half: Y_N = mean_Y0 - Σ fΔt + Σ⟨Z,ΔW⟩
         Y_N_2  = Y0_init - (f_2 * dts.unsqueeze(1)).sum(0) + z_dw_2.sum(0)
 
-        term_error_sq = (g_2 - Y_N_2).pow(2)                   # (Mbatch,)
+        term_error_sq = (g_2 - Y_N_2).pow(2)
 
         # ------------------------------------------------------------------
-        # 3) robust FBSDE loss  L = 1/Mbatch ( Σ Y0_first  + λ Σ |g - Y_N|² )
+        #  robust FBSDE loss  L = 1/Mbatch ( Σ Y0_first  + λ Σ |g - Y_N|² )
         # ------------------------------------------------------------------
         loss = (Y0_first.sum() + reg * term_error_sq.sum()) / Mbatch
 

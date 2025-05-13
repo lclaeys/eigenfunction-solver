@@ -8,7 +8,6 @@ Furthermore, it contains the following functions which are adapted from https://
     - Compute EMA (changed to log space)
     - Compute control objective
     - Compute trajectories (added function that only outputs the final states)
-    - Solution for LQR
 """
 
 import torch
@@ -30,7 +29,6 @@ def mala_samples(sde, x, t, lmbd, verbose=False):
         lmbd (float): noise level for proposal
         verbose (bool)
     """
-    # Precompute the inverse of sigma (assumed constant) for the proposal density.
     inv_sigma = torch.inverse(sde.sigma)
     
     if sde.confining:
@@ -49,50 +47,33 @@ def mala_samples(sde, x, t, lmbd, verbose=False):
     for t0, t1 in time_iterator:        
         dt = t1 - t0
         
-        # Propose a candidate move using the ULA (Euler–Maruyama) step.
         noise = torch.randn_like(x, device=x.device)
         drift_x = sde.b(t0, x) * energy_sign * 2 / lmbd
         proposal = x + drift_x * dt + torch.sqrt(lmbd * dt) * torch.einsum("ij,bj->bi", sde.sigma, noise)
         
-        # Compute the drift at the proposal point (using time t1).
         drift_proposal = sde.b(t1, proposal) * energy_sign * 2 / lmbd
-        
-        # Compute the forward move residual:
-        #   diff_forward = proposal - (x + drift_x*dt)
+
         diff_forward = proposal - x - drift_x * dt
-        # And the reverse move residual:
-        #   diff_reverse = x - (proposal + drift_proposal*dt)
+
         diff_reverse = x - proposal - drift_proposal * dt
         
-        # To compute the (log) proposal densities (up to constants), we “whiten” these differences.
-        # Here the proposal distribution is Gaussian with covariance (lmbd*dt)*(sde.sigma @ sde.sigma^T).
-        # Compute the transformed differences:
         transformed_forward = torch.einsum("ij,bj->bi", inv_sigma, diff_forward)
         transformed_reverse = torch.einsum("ij,bj->bi", inv_sigma, diff_reverse)
         
-        # Compute squared Mahalanobis norms.
         sq_norm_forward = (transformed_forward ** 2).sum(dim=1)
         sq_norm_reverse = (transformed_reverse ** 2).sum(dim=1)
         
-        # Log-density (ignoring normalization constants that cancel out)
         log_q_forward = -0.5 * sq_norm_forward / (lmbd * dt)
         log_q_reverse = -0.5 * sq_norm_reverse / (lmbd * dt)
         
-        # Compute the Metropolis log acceptance ratio.
-        # Since energy(x) is the potential (i.e. -log p(x) up to constant), the difference 
-        # energy(x) - energy(proposal) accounts for the target density ratio.
-
         proposal_energy = sde.energy(proposal) * 2 / lmbd * energy_sign
 
         log_alpha = (-proposal_energy + last_energy) + (log_q_reverse - log_q_forward)
         
-        # Clamp log_alpha at 0 before exponentiating so that acceptance probability is ≤ 1.
         alpha = torch.exp(torch.minimum(log_alpha, torch.zeros_like(log_alpha)))
         
-        # Decide whether to accept the proposal.
-        # Generate a random number for each sample (assume x is [batch, dims]).
         accept = (torch.rand(x.shape[0], device=x.device) < alpha)
-        # If accepted, update x to the proposal; otherwise, keep the current x.
+
         x = torch.where(accept[:,None], proposal, x)
         last_energy = torch.where(accept, proposal_energy, last_energy)
         
