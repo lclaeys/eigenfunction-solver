@@ -1,5 +1,5 @@
 # A Schrödinger Eigenfunction Method for Long-Horizon Stochastic Optimal Control
-This (branch of the) repository contains the code used for the master thesis "A Schrödinger Eigenfunction Method for Long-Horizon Stochastic Optimal Control" at ETH Zurich. The goal of the work is to design a numerical solver for stochastic optimal control (SOC) problems by using neural networks to learn the eigenfunctions of an associated Schrödinger operator.
+This repository contains the code used for the paper "A Schrödinger Eigenfunction Method for Long-Horizon Stochastic Optimal Control". The goal of the work is to design a numerical solver for stochastic optimal control (SOC) problems by using neural networks to learn the eigenfunctions of an associated Schrödinger operator.
 
 ## User guide
 
@@ -8,16 +8,16 @@ To install the required libraries, run `pip install -r requirements.txt`.
 The folder `SOC_eigf` contains the code of the method, and the file `main.py` can be used to run experiments. The configuration of the experiment should be specified in the `experiment_cfg.yaml` file or otherwise specified using flags. To run multiple experiments in parallel, pass a list as one or more of the arguments. For instace, running 
 
 ```
-torchrun main.py --master_port=29500 setting="double_well" d=10 method="EIGF" solver.eigf_loss=["ritz","var"] gpu=[0,1] run_name=["ritz_test","var_test"] experiment_name="double_well_d10"
+torchrun --master_port=29500 main.py setting="double_well" d=10 method="EIGF" solver.eigf_loss=["ritz","rel"] gpu=[0,1] run_name=["ritz_test","rel_test"] experiment_name="double_well_d10"
 ```
 
-will run the eigenfunction method for the `DoubleWell` setting in $d=10$, using the deep Ritz loss on `cuda:0` and the variational loss on `cuda:1`, and save the results in `experiments/double_well_d10/EIGF/ritz_test` and `experiments/double_well_d10/EIGF/var_test` respectively.
+will run the eigenfunction method for the `DoubleWell` setting in $d=10$, using the deep Ritz loss on `cuda:0` and the relative loss on `cuda:1`, and save the results in `experiments/double_well_d10/EIGF/ritz_test` and `experiments/double_well_d10/EIGF/rel_test` respectively.
 
 ## Reproducing experiments
 
-The file `exp_cmds.txt` contains the commands used to perform the experiments documented in the thesis. Running these commands creates a folder for the experiment and a file `logs.csv` with relevant metrics saved during the run. It also saves checkpoints of the model weights as `solver_weights.pth`. 
+The file `exp_cmds.txt` contains the commands used to perform the experiments documented in the paper. Running these commands creates a folder for the experiment and a file `logs.csv` with relevant metrics saved during the run. It also saves checkpoints of the model weights as `solver_weights_{itr}.pth`. 
 
-The code used to analyze the results and generate plots is given in `plots.ipynb`. In addition, the script `create_plots.py` generates plots of the control objective, L2 error and eigenfunction metrics for each experiment listed in `experiments_list.txt` in the directory `figures`.
+The code used to analyze the results and generate plots is given in `plots.ipynb`. In addition, the script `create_plots.py` generates plots of the control objective, L2 error as a function of iteration, L2 error as a function of iteration time, and the performance of different eigenfunction losses for each experiment listed in `experiments_list.txt` in the directory `figures`. It also creates the other figures in the paper (performance deterioration with increasing $T$, ring example etc.). The script can be edited to only generate a subset of these figures.
 
 For estimating the computation cost, the bash file `time_experiments.sh` reruns experiments found in `experiments_list.txt` sequentially for 1000 iterations, saving the results in the folder `timing_experiments`. The notebook `timing.ipynb` contains code to analyze the average time per iteration from this data.
 
@@ -35,7 +35,7 @@ We give an overview of all of the parameters that can be specified in `experimen
 | `T`                              | Time horizon                               | `4.0`           |
 | `eval_frac`                      | Evaluate on $[0, aT]$ (debugging)          | `1.0`           |
 | `num_steps`                      | Number of steps in simulation              | `200`           |
-| `method`                         | Training method used                       | `EIGF`      |
+| `method`                         | Training method used (`EIGF`, `COMBINED`,`IDO`, `FBSDE`)| `EIGF`      |
 | `experiment_name`                | Name of the experiment folder              | `double_well_d10` |
 | `run_name`                       | Name of the run                            | `ritz_GAUSS`  |
 | `seed`                           | Random seed for reproducibility            | `0`             |
@@ -46,6 +46,7 @@ We give an overview of all of the parameters that can be specified in `experimen
 | `compute_objective_every`       | Compute objective function every N iterations   | `1000`          |
 | `objective_samples`             | Number of samples for objective computation | `65536`         |
 | `trained_eigf_run_name`         | Run name used for pretrained eigenfunctions (in combined method) | `rel_GAUSS`     |
+| `use_exact_eigvals`              | Whether to use known explicit eigenvalues (debugging) | `false`|
 | `eigf.k`                         | Number of eigenfunctions to train          | `2`             |
 | `eigf.hdims`                     | Hidden layers for eigenfunction network    | `[256, 256, 256]` |
 | `eigf.arch`                      | Architecture used for eigenfunction        | `GAUSS`         |
@@ -65,8 +66,10 @@ We give an overview of all of the parameters that can be specified in `experimen
 | `solver.finetune`               | Train with Ritz loss until first eigenvalue converged | `true`          |
 | `solver.nsamples`               | Batch size for eigenfunction learning           | `65536`         |
 | `solver.ido_algorithm`          | IDO algorithm variant used                 | `SOCM_adjoint`  |
+| `solver.fbsde_reg`              | Regularizer for FBSDE algorithm             | `0.0`           |
+| `solver.ritz_steps`             | Minimum number of deep Ritz steps before using non-Ritz loss | `5000` |
 | `optim.batch_size`              | Batch size for optimization in IDO/COMBINED| `64`            |
-| `optim.adam_lr`                 | Learning rate for EIGF/COMBINED            | `0.0001`        |
+| `optim.adam_lr`                 | Learning rate for EIGF/COMBINED/FBSDE            | `0.0001`        |
 | `optim.adam_eps`                | Epsilon value for Adam                     | `1.0e-08`       |
 | `optim.adam_wd`                 | Weight decay for Adam                      | `1.0e-08`       |
 | `optim.ido_lr`                  | Learning rate for IDO                      | `0.0001`        |
