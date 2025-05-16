@@ -228,7 +228,10 @@ class NeuralSDE(nn.Module):
                 ido_t_rev = (self.T - ido_t).unsqueeze(0)
             
             if self.eigval_diff is None:
-                self.eigval_diff = (self.eigvals[1] - self.eigvals[0]) * self.lmbd / 2
+                if len(self.eigvals) > 1:
+                    self.eigval_diff = (self.eigvals[1] - self.eigvals[0]) * self.lmbd / 2
+                else:
+                    self.eigval_diff = 0
 
         if len(x.shape) == 2:
             if self.method == "EIGF":

@@ -56,7 +56,7 @@ def ground_truth_control(cfg, ts, x0, **kwargs):
 
         return optimal_sde
     
-    elif cfg.setting == "double_well" or cfg.setting == "double_well_hard":
+    elif cfg.setting == "double_well":
         if cfg.setting == "double_well":
             optimal_sde = DoubleWell(
                 device=cfg.device,
@@ -136,20 +136,6 @@ def define_neural_sde(cfg, ts, x0, **kwargs):
             ido_cfg=cfg.ido
         )
     elif cfg.setting == "double_well":
-        neural_sde = DoubleWell(
-            device=cfg.device,
-            u=None,
-            dim=cfg.d,
-            lmbd=cfg.lmbd,
-            kappa=kwargs["kappa"],
-            nu=kwargs["nu"],
-            sigma=kwargs["sigma"],
-            T=cfg.T,
-            method=cfg.method,
-            eigf_cfg=cfg.eigf,
-            ido_cfg=cfg.ido
-        )
-    elif cfg.setting == "double_well_hard":
         neural_sde = DoubleWell(
             device=cfg.device,
             u=None,
