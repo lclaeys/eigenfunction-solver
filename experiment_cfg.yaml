@@ -1,0 +1,68 @@
+setting: double_well
+d: 10
+device: cuda
+gpu: 0
+lmbd: 1.0
+T: 4.0
+eval_frac: 1.0
+num_steps: 400
+method: COMBINED
+experiment_name: double_well_d10
+run_name: SOCM_adjoint
+seed: 0
+num_iterations: 80000
+save_model_every: 5000
+log_every: 100
+compute_control_error_every: 100
+compute_objective_every: 1000
+objective_samples: 65536
+trained_eigf_run_name: rel_GAUSS
+use_exact_eigvals: false
+eigf:
+  k: 2
+  hdims:
+  - 256
+  - 256
+  - 256
+  arch: GAUSS
+ido:
+  hdims:
+  - 256
+  - 128
+  - 64
+  hdims_M:
+  - 128
+  - 128
+  gamma: 1.0
+  gamma1: 1.0
+  gamma2: 1.0
+  scaling_factor_nabla_V: 1.0
+  scaling_factor_M: 1.0
+  T_cutoff: 1.0
+  train_scalar: false
+  arch_scalar: GELUNET
+solver:
+  langevin_burnin_steps: 1000
+  langevin_sample_steps: 100
+  langevin_dt: 0.01
+  beta: 0.15
+  eigf_loss: ritz
+  trajectory_loss: false
+  new_trajectory_every: 100
+  finetune: true
+  nsamples: 65536
+  ido_algorithm: SOCM_adjoint
+  fbsde_reg: 0.0
+  ritz_steps: 5000
+optim:
+  batch_size: 64
+  adam_lr: 0.0001
+  adam_eps: 1.0e-08
+  adam_wd: 1.0e-08
+  ido_lr: 0.0001
+  fbsde_lr: 0.0001
+  M_lr: 0.01
+  y0_lr: 0.01
+delta_t_optimal: 0.0001
+delta_x_optimal: 0.01
+timing: false
