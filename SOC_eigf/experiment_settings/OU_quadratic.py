@@ -204,7 +204,6 @@ class OU_Quadratic(NeuralSDE):
                     ratio_term = grad_hermite_evals / hermite_evals
                     grad_fx_poly[:,i,:] = fx_poly[:,i,None] * (ratio_term) @ input_transform.T
         
-        # TODO: add normalization
         normalization = (torch.prod(Lambda)**(-1/4) * torch.linalg.det(A.abs())**(1/2)) ** (1/2)
 
         fx = fx_poly * quadratic_form[:,None] / normalization
