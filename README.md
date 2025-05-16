@@ -17,7 +17,7 @@ will run the eigenfunction method for the `DoubleWell` setting in $d=10$, using 
 
 The file `exp_cmds.txt` contains the commands used to perform the experiments documented in the paper. Running these commands creates a folder for the experiment and a file `logs.csv` with relevant metrics saved during the run. It also saves checkpoints of the model weights as `solver_weights_{itr}.pth`. 
 
-The code used to analyze the results and generate plots is given in `plots.ipynb`. In addition, the script `create_plots.py` generates plots of the control objective, L2 error as a function of iteration, L2 error as a function of iteration time, and the performance of different eigenfunction losses for each experiment listed in `experiments_list.txt` in the directory `figures`. It also creates the other figures in the paper (performance deterioration with increasing $T$, ring example etc.). The script can be edited to only generate a subset of these figures.
+The code used to analyze the results and generate plots is given in `plots.ipynb`. In addition, the script `create_plots.py` generates plots of the control objective, average L2 error as a function of iteration, L2 error as a function of iteration time, and the performance of different eigenfunction losses for each experiment listed in `experiments_list.txt` in the directory `figures`. It also creates the other figures in the paper (performance deterioration with increasing $T$, ring example etc.) and estimates the objective, printing to the file `objectives.txt`. The script can be edited to only generate a subset of these figures.
 
 For estimating the computation cost, the bash file `time_experiments.sh` reruns experiments found in `experiments_list.txt` sequentially for 1000 iterations, saving the results in the folder `timing_experiments`. The notebook `timing.ipynb` contains code to analyze the average time per iteration from this data.
 
@@ -25,19 +25,19 @@ For estimating the computation cost, the bash file `time_experiments.sh` reruns 
 
 We give an overview of all of the parameters that can be specified in `experiment_cfg.yaml`:
 
-| Parameter                         | Description                                | Example Value   |
+| Parameter                         | Description                                | Example/default value   |
 |----------------------------------|--------------------------------------------|-----------------|
-| `setting`                        | Experiment setup name                      | `double_well`   |
+| `setting`                        | Experiment setup name                      | `double_well_d10`   |
 | `d`                              | Dimensionality of the system               | `10`            |
 | `device`                         | Computation device                         | `cuda`          |
-| `gpu`                            | GPU index to use                           | `2`             |
+| `gpu`                            | GPU index to use                           | `0`             |
 | `lmbd`                           | Noise level $\lambda = \beta^{-1}$         | `1.0`           |
 | `T`                              | Time horizon                               | `4.0`           |
 | `eval_frac`                      | Evaluate on $[0, aT]$ (debugging)          | `1.0`           |
-| `num_steps`                      | Number of steps in simulation              | `200`           |
-| `method`                         | Training method used (`EIGF`, `COMBINED`,`IDO`, `FBSDE`)| `EIGF`      |
+| `num_steps`                      | Number of steps in simulation              | `400`           |
+| `method`                         | Training method used (`EIGF`, `COMBINED`,`IDO`, `FBSDE`)| `IDO`      |
 | `experiment_name`                | Name of the experiment folder              | `double_well_d10` |
-| `run_name`                       | Name of the run                            | `ritz_GAUSS`  |
+| `run_name`                       | Name of the run                            | `SOCM`  |
 | `seed`                           | Random seed for reproducibility            | `0`             |
 | `num_iterations`                 | Total training iterations                  | `80000`         |
 | `save_model_every`               | Save model every N iterations              | `5000`          |
@@ -57,7 +57,7 @@ We give an overview of all of the parameters that can be specified in `experimen
 | `ido.gamma2`                     | Gamma2 parameter                           | `1.0`           |
 | `ido.scaling_factor_nabla_V`    | Initialization scale for IDO method         | `1.0`           |
 | `ido.scaling_factor_M`          | Initialization scale for M-network in SOCM | `1.0`           |
-| `ido.T_cutoff`                  | Cutoff time for combined method               | `1.5`           |
+| `ido.T_cutoff`                  | Cutoff time for combined method               | `1.0`           |
 | `solver.langevin_burnin_steps`  | Burn-in steps for Langevin sampling        | `1000`          |
 | `solver.langevin_sample_steps`  | Sample steps for Langevin                  | `100`           |
 | `solver.langevin_dt`            | Time step for Langevin dynamics            | `0.01`          |
@@ -65,7 +65,7 @@ We give an overview of all of the parameters that can be specified in `experimen
 | `solver.eigf_loss`              | Loss type for eigenfunctions               | `ritz`          |
 | `solver.finetune`               | Train with Ritz loss until first eigenvalue converged | `true`          |
 | `solver.nsamples`               | Batch size for eigenfunction learning           | `65536`         |
-| `solver.ido_algorithm`          | IDO algorithm variant used                 | `SOCM_adjoint`  |
+| `solver.ido_algorithm`          | IDO algorithm variant used                 | `SOCM`  |
 | `solver.fbsde_reg`              | Regularizer for FBSDE algorithm             | `0.0`           |
 | `solver.ritz_steps`             | Minimum number of deep Ritz steps before using non-Ritz loss | `5000` |
 | `optim.batch_size`              | Batch size for optimization in IDO/COMBINED| `64`            |
