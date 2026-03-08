@@ -506,6 +506,7 @@ class SOC_Solver(nn.Module):
         self,
         gs_fx,
         gs_Dfx,
+        verbose=False
     ):
         Dfx, fx = self.neural_sde.eigf_model_jac(self.samples)
 
